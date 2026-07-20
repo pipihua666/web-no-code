@@ -1,0 +1,49 @@
+{
+  "name": "@web-no-code/vite-inspector-plugin",
+  "version": "0.1.14",
+  "type": "module",
+  "private": false,
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs",
+      "default": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "web-no-code": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "pnpm --dir ../editor build && tsup src/index.ts --format esm,cjs --dts --clean --sourcemap && tsup src/cli.ts src/server-entry.ts --format esm --dts --sourcemap --external @vue/compiler-sfc --external postcss --external postcss-scss && node scripts/copy-assets.mjs",
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "dev": "tsup src/index.ts --format esm,cjs --dts --clean --sourcemap --watch ../server/src src --onSuccess \"tsup src/cli.ts src/server-entry.ts --format esm --dts --sourcemap --external @vue/compiler-sfc --external postcss --external postcss-scss && node scripts/copy-assets.mjs\"",
+    "prepack": "pnpm build"
+  },
+  "dependencies": {
+    "@jridgewell/trace-mapping": "^0.3.31",
+    "@vue/compiler-sfc": "^3.5.39",
+    "diff": "^8.0.2",
+    "express": "^5.2.1",
+    "multer": "^2.0.2",
+    "nanoid": "^5.1.6",
+    "postcss": "^8.5.16",
+    "postcss-scss": "^4.0.9",
+    "vite-plugin-vue-inspector": "^7.0.0"
+  },
+  "peerDependencies": {
+    "vite": ">=5"
+  },
+  "devDependencies": {
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.0"
+  }
+}

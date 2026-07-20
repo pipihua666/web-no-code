@@ -1,0 +1,44 @@
+{
+  "name": "web-no-code",
+  "private": true,
+  "version": "0.1.14",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -n server,editor-build,plugin,assets -c cyan,magenta,yellow,blue \"pnpm --dir packages/server dev\" \"pnpm --dir packages/editor dev:build\" \"pnpm --dir packages/vite-inspector-plugin dev\" \"node packages/vite-inspector-plugin/scripts/watch-assets.mjs\"",
+    "dev:vue": "pnpm --dir examples/vue-target dev",
+    "build": "tsc -b && pnpm --dir packages/vite-inspector-plugin build",
+    "clean": "node -e \"const fs=require('fs'); ['dist','packages/editor/dist','packages/vite-inspector-plugin/dist','examples/vue-target/dist'].forEach((dir)=>fs.rmSync(dir,{recursive:true,force:true}))\"",
+    "release": "node scripts/release-npm.mjs current",
+    "release:patch": "node scripts/release-npm.mjs patch",
+    "release:minor": "node scripts/release-npm.mjs minor",
+    "release:major": "node scripts/release-npm.mjs major",
+    "typecheck": "tsc -b"
+  },
+  "dependencies": {
+    "@vitejs/plugin-vue": "^6.0.3",
+    "@web-no-code/server": "workspace:*",
+    "concurrently": "^9.2.1",
+    "diff": "^8.0.2",
+    "express": "^5.2.1",
+    "lucide-react": "^0.561.0",
+    "multer": "^2.0.2",
+    "nanoid": "^5.1.6",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "vite": "^7.3.0",
+    "vue": "^3.5.26"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/multer": "^2.0.0",
+    "@types/node": "^25.0.3",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.2",
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3",
+    "tsup": "^8.5.1",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}
