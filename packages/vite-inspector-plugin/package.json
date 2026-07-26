@@ -3,6 +3,11 @@
   "version": "0.1.15",
   "type": "module",
   "private": false,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pipihua666/web-no-code.git",
+    "directory": "packages/vite-inspector-plugin"
+  },
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
