@@ -101,10 +101,18 @@ if (releaseType === "current") {
 
 const nextVersion = releaseType === "current" ? rootPackage.version : bumpVersion(rootPackage.version, releaseType);
 const tag = `v${nextVersion}`;
+let reuseExistingTag = false;
 
 if (run("git", ["tag", "--list", tag], { capture: true }).trim()) {
-  console.error(`Release aborted: tag ${tag} already exists.`);
-  process.exit(1);
+  const tagCommit = run("git", ["rev-list", "-n", "1", tag], { capture: true }).trim();
+  const headCommit = run("git", ["rev-parse", "HEAD"], { capture: true }).trim();
+  if (releaseType === "current" && tagCommit === headCommit) {
+    reuseExistingTag = true;
+    console.log(`Reusing existing local tag ${tag} at HEAD.`);
+  } else {
+    console.error(`Release aborted: tag ${tag} already exists and does not match the current release target.`);
+    process.exit(1);
+  }
 }
 
 if (releaseType !== "current") {
@@ -128,8 +136,12 @@ run("pnpm", ["typecheck"]);
 run("pnpm", ["build"], { cwd: pluginDir });
 run("npm", ["publish", "--access", "public"], { cwd: pluginDir });
 
-run("git", ["add", ...packageFiles, "scripts/release-npm.mjs"]);
-run("git", ["commit", "-m", `chore: release ${tag}`]);
-run("git", ["tag", tag]);
+if (!reuseExistingTag) {
+  run("git", ["add", ...packageFiles, "scripts/release-npm.mjs"]);
+  run("git", ["commit", "-m", `chore: release ${tag}`]);
+  run("git", ["tag", tag]);
+}
 
-console.log(`Published ${pluginPackage.name}@${nextVersion} to npm and created local tag ${tag}.`);
+console.log(
+  `Published ${pluginPackage.name}@${nextVersion} to npm and ${reuseExistingTag ? "reused" : "created"} local tag ${tag}.`
+);
