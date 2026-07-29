@@ -11,6 +11,7 @@ import {
   Globe2,
   ImageUp,
   Loader2,
+  Maximize2,
   Monitor,
   MousePointer2,
   Move,
@@ -22,7 +23,8 @@ import {
   Sparkles,
   SquareCode,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type {
   ChangeEvent,
   ClipboardEvent as ReactClipboardEvent,
@@ -43,15 +45,17 @@ import {
   getCodexSkills,
   getCodexThreadStatus,
   getRegisteredTargets,
+  getWorkspaceAgents,
   interruptCodexTurn,
   resumeCodexThread,
   runCodexTurn,
   steerCodexTurn,
   startCodexThread,
+  updateWorkspaceAgents,
   replaceAsset,
   uploadCodexAttachment,
 } from "./api";
-import type { CodexModel, RegisteredTarget, TargetAlias } from "./api";
+import type { CodexModel, RegisteredTarget, TargetAlias, WorkspaceAgentsEvent } from "./api";
 import type { CodexEvent, SelectedElementContext } from "@web-no-code/server/codex/types";
 import { resolveAssetPreviewUrl, resolveBackgroundAssetSource } from "./asset-preview";
 import { compactSelectorPart, displaySelector, selectorBreadcrumbs } from "./selector-path";
@@ -59,7 +63,6 @@ import { compactSelectorPart, displaySelector, selectorBreadcrumbs } from "./sel
 const DEFAULT_TARGET = "about:blank";
 const DEFAULT_ROOT = "";
 const DEFAULT_APP_TITLE = "Web No Code";
-const CODEX_INSTRUCTIONS_STORAGE_KEY = "web-no-code-codex-instructions";
 const CODEX_SANDBOX_STORAGE_KEY = "web-no-code-codex-sandbox-v2";
 const CODEX_WORKSPACE_MODE_STORAGE_KEY = "web-no-code-codex-workspace-mode-v2";
 const CODEX_MODEL_STORAGE_KEY = "web-no-code-codex-model-v1";
@@ -69,6 +72,9 @@ const EDITOR_TARGET_STORAGE_KEY = "web-no-code-editor-target-root";
 const SMALL_SCREEN_MEDIA_QUERY = "(max-width: 1299px)";
 const MAX_CODEX_TASKS = 3;
 const CODEX_SEND_DEBOUNCE_MS = 400;
+const CODEX_RECOVERY_POLL_INTERVAL_MS = 10_000;
+const CODEX_SESSION_WRITE_DEBOUNCE_MS = 750;
+const AGENTS_WRITE_DEBOUNCE_MS = 300;
 const DEVICE_PRESETS = [
   { label: "375px", value: 375 },
   { label: "750px", value: 750 },
@@ -128,12 +134,64 @@ type CodexWorkspaceMode = "shadow" | "direct";
 
 let chatId = 0;
 
+const CodexChatMessageView = memo(function CodexChatMessageView({
+  message,
+  streaming,
+  activityElapsedMs
+}: {
+  message: ChatMessage;
+  streaming: boolean;
+  activityElapsedMs: number;
+}) {
+  const activity = streaming ? (
+    <div className="codex-live-activity" aria-label="Codex is working">
+      <Loader2 className="spin" size={13} aria-hidden="true" />
+      <span>{codexActivityLabel(activityElapsedMs, Boolean(message.content))}</span>
+      <time>{formatElapsedTime(activityElapsedMs)}</time>
+    </div>
+  ) : null;
+  return (
+    <article className={`chat-message ${message.role}`}>
+      <div className="chat-message-meta">
+        <span>{message.role === "user" ? "You" : "Codex"}</span>
+        {message.elapsedMs != null ? <small>{formatElapsedTime(message.elapsedMs)}</small> : null}
+      </div>
+      {message.element ? (
+        <div className="chat-element-summary">
+          <strong>{message.element.tagName}</strong>
+          <code>{message.element.selector}</code>
+          {message.element.source ? <small>{message.element.source}</small> : null}
+        </div>
+      ) : null}
+      {message.role === "assistant" ? (
+        message.content ? (
+          streaming ? (
+            <>
+              <p className="streaming-response">{message.content}</p>
+              {activity}
+            </>
+          ) : (
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+          )
+        ) : (
+          activity || <p className="streaming-placeholder">Thinking...</p>
+        )
+      ) : (
+        <p>{message.content}</p>
+      )}
+    </article>
+  );
+});
+
 export default function App() {
   const persistedCodexSession = useMemo(() => readCodexSessionStorage(DEFAULT_ROOT), []);
   const editorTargetRootRef = useRef(readEditorTargetRootStorage());
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const codexFileInputRef = useRef<HTMLInputElement | null>(null);
   const chatPanelRef = useRef<HTMLDivElement | null>(null);
+  const codexTaskListRef = useRef<HTMLDivElement | null>(null);
+  const codexTaskTabRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const pendingCodexTaskScrollRef = useRef(persistedCodexSession.activeTaskId);
   const skillMenuRef = useRef<HTMLDivElement | null>(null);
   const codexModelPickerRef = useRef<HTMLDivElement | null>(null);
   const selectorBreadcrumbRef = useRef<HTMLDivElement | null>(null);
@@ -144,9 +202,19 @@ export default function App() {
   const codexAttachmentsRef = useRef<CodexAttachment[]>([]);
   const codexTurnBusyRef = useRef<Record<string, boolean>>({});
   const codexLastSubmitAtRef = useRef<Record<string, number>>({});
+  const codexTurnStartedAtRef = useRef<Record<string, number>>({});
   const codexTasksRef = useRef<CodexTask[]>(persistedCodexSession.tasks);
   const activeCodexTaskIdRef = useRef(persistedCodexSession.activeTaskId);
   const codexThreadTaskIdsRef = useRef<Record<string, string>>({});
+  const codexDeltaBuffersRef = useRef<Record<string, string>>({});
+  const codexDeltaFlushFrameRef = useRef(0);
+  const codexSessionWriteTimerRef = useRef(0);
+  const pendingCodexSessionWriteRef = useRef<{ root: string; snapshot: CodexSessionSnapshot } | null>(null);
+  const workspaceRootRef = useRef(DEFAULT_ROOT);
+  const agentsInstructionsRef = useRef("");
+  const draftAgentsInstructionsRef = useRef("");
+  const agentsWriteTimerRef = useRef(0);
+  const pendingAgentsWriteRef = useRef<{ root: string; content: string } | null>(null);
   const openSourceRef = useRef<() => void>(() => {});
   const pendingAttachmentSignaturesRef = useRef<Set<string>>(new Set());
   const lastPasteHandledAtRef = useRef(0);
@@ -173,10 +241,13 @@ export default function App() {
   const [codexSessionWorkspaceRoot, setCodexSessionWorkspaceRoot] = useState(() => normalizeCodexWorkspaceRoot(DEFAULT_ROOT));
   const [codexTasks, setCodexTasks] = useState<CodexTask[]>(persistedCodexSession.tasks);
   const [activeCodexTaskId, setActiveCodexTaskId] = useState(persistedCodexSession.activeTaskId);
-  const [codexInstructions, setCodexInstructions] = useState(readCodexInstructionsStorage);
+  const [agentsInstructions, setAgentsInstructions] = useState("");
+  const [draftAgentsInstructions, setDraftAgentsInstructions] = useState("");
+  const [agentsInstructionsStatus, setAgentsInstructionsStatus] = useState("Not loaded");
+  const [globalAgentsInstructions, setGlobalAgentsInstructions] = useState("");
+  const [globalAgentsInstructionsStatus, setGlobalAgentsInstructionsStatus] = useState("Not loaded");
   const [codexSandbox, setCodexSandbox] = useState<CodexSandbox>(readCodexSandboxStorage);
   const [codexWorkspaceMode, setCodexWorkspaceMode] = useState<CodexWorkspaceMode>(readCodexWorkspaceModeStorage);
-  const [draftCodexInstructions, setDraftCodexInstructions] = useState(readCodexInstructionsStorage);
   const [draftCodexSandbox, setDraftCodexSandbox] = useState<CodexSandbox>(readCodexSandboxStorage);
   const [draftCodexWorkspaceMode, setDraftCodexWorkspaceMode] = useState<CodexWorkspaceMode>(readCodexWorkspaceModeStorage);
   const [codexModel, setCodexModel] = useState(readCodexModelStorage);
@@ -185,6 +256,7 @@ export default function App() {
   const [codexModelsLoading, setCodexModelsLoading] = useState(false);
   const [codexModelPickerOpen, setCodexModelPickerOpen] = useState(false);
   const [codexSettingsOpen, setCodexSettingsOpen] = useState(false);
+  const [agentsViewerMode, setAgentsViewerMode] = useState<"global" | "project" | null>(null);
   const [cssRulesDrawerOpen, setCssRulesDrawerOpen] = useState(
     () => !window.matchMedia(SMALL_SCREEN_MEDIA_QUERY).matches
   );
@@ -194,6 +266,7 @@ export default function App() {
   const [skillTriggerStart, setSkillTriggerStart] = useState<number | null>(null);
   const [skillActiveIndex, setSkillActiveIndex] = useState(0);
   const [codexPasteStatus, setCodexPasteStatus] = useState("");
+  const [codexActivityNow, setCodexActivityNow] = useState(Date.now());
   const [pendingDeleteCodexTaskId, setPendingDeleteCodexTaskId] = useState("");
   const [assetPreviewVersion, setAssetPreviewVersion] = useState(0);
   const [imageUrlDialog, setImageUrlDialog] = useState<{ open: boolean; value: string; error: string }>({
@@ -210,14 +283,18 @@ export default function App() {
   const codexAttachments = activeCodexTask?.attachments || [];
   const chatMessages = activeCodexTask?.chatMessages || [];
   const busy = Boolean(activeCodexTask?.busy);
+  const codexActivityElapsedMs = busy && activeCodexTask
+    ? Math.max(0, codexActivityNow - (codexTurnStartedAtRef.current[activeCodexTask.id] || codexActivityNow))
+    : 0;
   const canCreateCodexTask = codexTasks.length < MAX_CODEX_TASKS;
   const pendingDeleteCodexTask = pendingDeleteCodexTaskId
     ? codexTasks.find((task) => task.id === pendingDeleteCodexTaskId) || null
     : null;
   const codexSettingsDirty =
-    draftCodexInstructions !== codexInstructions ||
     draftCodexSandbox !== codexSandbox ||
     draftCodexWorkspaceMode !== codexWorkspaceMode;
+  const projectAgentsStats = useMemo(() => getDocumentStats(draftAgentsInstructions), [draftAgentsInstructions]);
+  const globalAgentsStats = useMemo(() => getDocumentStats(globalAgentsInstructions), [globalAgentsInstructions]);
 
   const selectedStyles = useMemo(() => selected?.styles || {}, [selected]);
   const styleEntries = useMemo(
@@ -262,8 +339,12 @@ export default function App() {
     ? (codexReasoningEffortIndex / (selectedCodexModel.supportedReasoningEfforts.length - 1)) * 100
     : 0;
   const codexReasoningEffortLightness = Math.round(62 - (codexReasoningEffortProgress / 100) * 39);
-  const busyCodexThreadIds = useMemo(
-    () => codexTasks.filter((task) => task.busy && task.threadId).map((task) => task.threadId).sort().join(","),
+  const recoverableBusyCodexThreadIds = useMemo(
+    () => codexTasks
+      .filter((task) => task.busy && task.threadId && !codexLastSubmitAtRef.current[task.id])
+      .map((task) => task.threadId)
+      .sort()
+      .join(","),
     [codexTasks]
   );
 
@@ -271,7 +352,24 @@ export default function App() {
     refreshProviderStatus();
     void refreshCodexModels();
     refreshRegisteredTarget();
-    return createEventStream((event) => handleCodexEvent(event));
+    const closeEventStream = createEventStream(
+      (event) => handleCodexEvent(event),
+      (event) => handleWorkspaceEvent(event)
+    );
+    const handlePageHide = () => {
+      flushPendingAgentsWrite(true);
+      flushPendingCodexSessionWrite();
+    };
+    window.addEventListener("pagehide", handlePageHide);
+    return () => {
+      window.removeEventListener("pagehide", handlePageHide);
+      closeEventStream();
+      flushPendingAgentsWrite(true);
+      flushPendingCodexSessionWrite();
+      window.cancelAnimationFrame(codexDeltaFlushFrameRef.current);
+      codexDeltaFlushFrameRef.current = 0;
+      codexDeltaBuffersRef.current = {};
+    };
   }, []);
 
   useEffect(() => {
@@ -283,64 +381,115 @@ export default function App() {
   }, [codexReasoningEffort]);
 
   useEffect(() => {
+    flushPendingAgentsWrite();
+    workspaceRootRef.current = workspaceRoot;
+    agentsInstructionsRef.current = "";
+    draftAgentsInstructionsRef.current = "";
+    setAgentsInstructions("");
+    setDraftAgentsInstructions("");
+    setGlobalAgentsInstructions("");
+    setAgentsInstructionsStatus(workspaceRoot ? "Loading AGENTS.md..." : "No project workspace available");
+    setGlobalAgentsInstructionsStatus(workspaceRoot ? "Loading global rules..." : "Not loaded");
+    if (workspaceRoot) void refreshAgentsInstructions(workspaceRoot);
+  }, [workspaceRoot]);
+
+  useEffect(() => {
+    if (!agentsViewerMode) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setAgentsViewerMode(null);
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [agentsViewerMode]);
+
+  useEffect(() => {
     const nextWorkspaceRoot = normalizeCodexWorkspaceRoot(workspaceRoot);
     if (nextWorkspaceRoot === codexSessionWorkspaceRoot) return;
+    flushPendingCodexSessionWrite();
     const nextSession = readCodexSessionStorage(nextWorkspaceRoot);
+    pendingCodexTaskScrollRef.current = nextSession.activeTaskId;
     replaceCodexTasks(nextSession.tasks);
     setActiveCodexTaskId(nextSession.activeTaskId);
     codexTurnBusyRef.current = {};
     codexLastSubmitAtRef.current = {};
+    codexTurnStartedAtRef.current = {};
+    window.cancelAnimationFrame(codexDeltaFlushFrameRef.current);
+    codexDeltaFlushFrameRef.current = 0;
+    codexDeltaBuffersRef.current = {};
     setCodexSessionWorkspaceRoot(nextWorkspaceRoot);
   }, [workspaceRoot, codexSessionWorkspaceRoot]);
 
   useEffect(() => {
-    writeCodexSessionStorage(codexSessionWorkspaceRoot, {
-      activeTaskId: activeCodexTaskId,
-      tasks: codexTasks
-    });
+    window.clearTimeout(codexSessionWriteTimerRef.current);
+    pendingCodexSessionWriteRef.current = {
+      root: codexSessionWorkspaceRoot,
+      snapshot: { activeTaskId: activeCodexTaskId, tasks: codexTasks }
+    };
+    codexSessionWriteTimerRef.current = window.setTimeout(
+      flushPendingCodexSessionWrite,
+      CODEX_SESSION_WRITE_DEBOUNCE_MS
+    );
   }, [codexSessionWorkspaceRoot, activeCodexTaskId, codexTasks]);
 
   useEffect(() => {
-    if (!busyCodexThreadIds) return;
+    if (!recoverableBusyCodexThreadIds) return;
     let cancelled = false;
+    let timer = 0;
+    let reconciling = false;
 
     const reconcileBusyTurns = async () => {
-      const threadIds = busyCodexThreadIds.split(",").filter(Boolean);
-      await Promise.all(
-        threadIds.map(async (busyThreadId) => {
-          try {
-            const status = await getCodexThreadStatus(busyThreadId);
-            if (cancelled) return;
-            const task = codexTasksRef.current.find((item) => item.threadId === busyThreadId);
-            if (!task) return;
-            // Locally submitted turns are settled by their request stream. Polling is only
-            // needed to recover turns that were already busy when the page was reloaded.
-            if (codexLastSubmitAtRef.current[task.id]) return;
-            if (status.active) {
-              codexTurnBusyRef.current[task.id] = true;
-              return;
+      if (cancelled || reconciling || document.hidden) return;
+      reconciling = true;
+      try {
+        const threadIds = recoverableBusyCodexThreadIds.split(",").filter(Boolean);
+        await Promise.all(
+          threadIds.map(async (busyThreadId) => {
+            try {
+              const status = await getCodexThreadStatus(busyThreadId);
+              if (cancelled) return;
+              const task = codexTasksRef.current.find((item) => item.threadId === busyThreadId);
+              if (!task || codexLastSubmitAtRef.current[task.id]) return;
+              if (status.active) {
+                codexTurnBusyRef.current[task.id] = true;
+                return;
+              }
+              codexTurnBusyRef.current[task.id] = false;
+              restoreAssistantMessage(
+                status.finalMessage || "Codex turn ended while the page was reloading.",
+                status.durationMs,
+                task.id
+              );
+              setBusy(false, task.id);
+            } catch (error) {
+              addLog("error", error instanceof Error ? error.message : String(error));
             }
-            codexTurnBusyRef.current[task.id] = false;
-            restoreAssistantMessage(
-              status.finalMessage || "Codex turn ended while the page was reloading.",
-              status.durationMs,
-              task.id
-            );
-            setBusy(false, task.id);
-          } catch (error) {
-            addLog("error", error instanceof Error ? error.message : String(error));
-          }
-        })
-      );
+          })
+        );
+      } finally {
+        reconciling = false;
+      }
+    };
+
+    const scheduleReconcile = () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(async () => {
+        await reconcileBusyTurns();
+        if (!cancelled) scheduleReconcile();
+      }, CODEX_RECOVERY_POLL_INTERVAL_MS);
+    };
+    const handleVisibilityChange = () => {
+      if (!document.hidden) void reconcileBusyTurns();
     };
 
     void reconcileBusyTurns();
-    const timer = window.setInterval(() => void reconcileBusyTurns(), 2000);
+    scheduleReconcile();
+    document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [busyCodexThreadIds]);
+  }, [recoverableBusyCodexThreadIds]);
 
   useEffect(() => {
     document.title = appTitle;
@@ -434,6 +583,35 @@ export default function App() {
     panel.scrollTop = panel.scrollHeight;
   }, [chatMessages, busy]);
 
+  useEffect(() => {
+    if (!busy || !activeCodexTask?.id) return;
+    if (!codexTurnStartedAtRef.current[activeCodexTask.id]) {
+      codexTurnStartedAtRef.current[activeCodexTask.id] = Date.now();
+    }
+    setCodexActivityNow(Date.now());
+    const timer = window.setInterval(() => setCodexActivityNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [busy, activeCodexTask?.id]);
+
+  useEffect(() => {
+    const taskId = pendingCodexTaskScrollRef.current;
+    if (!taskId) return;
+    const frame = window.requestAnimationFrame(() => {
+      const list = codexTaskListRef.current;
+      const tab = codexTaskTabRefs.current.get(taskId);
+      if (!list || !tab) return;
+      pendingCodexTaskScrollRef.current = "";
+      const listBounds = list.getBoundingClientRect();
+      const tabBounds = tab.getBoundingClientRect();
+      if (tabBounds.right > listBounds.right) {
+        list.scrollBy({ left: tabBounds.right - listBounds.right + 2, behavior: "smooth" });
+      } else if (tabBounds.left < listBounds.left) {
+        list.scrollBy({ left: tabBounds.left - listBounds.left - 2, behavior: "smooth" });
+      }
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [codexTasks.length, activeCodexTaskId]);
+
   function updateCodexTask(taskId: string, updater: (task: CodexTask) => CodexTask) {
     replaceCodexTasks((current) => {
       const next = current.map((task) => (task.id === taskId ? { ...updater(task), updatedAt: Date.now() } : task));
@@ -447,6 +625,14 @@ export default function App() {
       codexTasksRef.current = next;
       return next;
     });
+  }
+
+  function flushPendingCodexSessionWrite() {
+    window.clearTimeout(codexSessionWriteTimerRef.current);
+    codexSessionWriteTimerRef.current = 0;
+    const pending = pendingCodexSessionWriteRef.current;
+    pendingCodexSessionWriteRef.current = null;
+    if (pending) writeCodexSessionStorage(pending.root, pending.snapshot);
   }
 
   function updateActiveCodexTask(updater: (task: CodexTask) => CodexTask) {
@@ -470,6 +656,8 @@ export default function App() {
 
   function setBusy(value: boolean, taskId = activeCodexTask?.id) {
     if (!taskId) return;
+    if (value) codexTurnStartedAtRef.current[taskId] ||= Date.now();
+    else delete codexTurnStartedAtRef.current[taskId];
     updateCodexTask(taskId, (task) => ({ ...task, busy: value }));
   }
 
@@ -655,7 +843,7 @@ export default function App() {
       : tasks.find((task) => task.id === activeTaskId) || tasks[0];
     const eventTaskId = eventTask?.id;
     if (event.type === "delta" && event.text) {
-      appendAssistantDelta(event.text, eventTaskId);
+      queueAssistantDelta(event.text, eventTaskId);
     }
     if (event.type === "status" || event.type === "provider") {
       addLog("status", event.message);
@@ -664,6 +852,7 @@ export default function App() {
       addLog("error", event.message);
     }
     if (event.type === "completed") {
+      flushAssistantDeltas();
       if (event.finalMessage) {
         addLog("assistant", event.finalMessage);
       }
@@ -672,6 +861,19 @@ export default function App() {
         codexTurnBusyRef.current[eventTaskId] = false;
         setBusy(false, eventTaskId);
       }
+    }
+  }
+
+  function handleWorkspaceEvent(event: WorkspaceAgentsEvent) {
+    if (event.type !== "agents-updated") return;
+    if (normalizeCodexWorkspaceRoot(event.root) !== normalizeCodexWorkspaceRoot(workspaceRootRef.current)) return;
+    const hasLocalChanges = draftAgentsInstructionsRef.current !== agentsInstructionsRef.current;
+    agentsInstructionsRef.current = event.content;
+    setAgentsInstructions(event.content);
+    if (!hasLocalChanges || draftAgentsInstructionsRef.current === event.content) {
+      draftAgentsInstructionsRef.current = event.content;
+      setDraftAgentsInstructions(event.content);
+      setAgentsInstructionsStatus(event.exists ? "Saved to AGENTS.md" : "AGENTS.md not created");
     }
   }
 
@@ -951,6 +1153,7 @@ export default function App() {
   function createCodexTask() {
     if (codexTasksRef.current.length >= MAX_CODEX_TASKS) return;
     const task = createEmptyCodexTask();
+    pendingCodexTaskScrollRef.current = task.id;
     replaceCodexTasks((current) => {
       if (current.length >= MAX_CODEX_TASKS) return current;
       const next = [...current, task];
@@ -968,6 +1171,17 @@ export default function App() {
     activeCodexTaskIdRef.current = taskId;
     setPendingDeleteCodexTaskId("");
     closeSkillMenu();
+    window.requestAnimationFrame(() => centerCodexTaskTab(taskId));
+  }
+
+  function centerCodexTaskTab(taskId: string) {
+    const list = codexTaskListRef.current;
+    const tab = codexTaskTabRefs.current.get(taskId);
+    if (!list || !tab) return;
+    const listBounds = list.getBoundingClientRect();
+    const tabBounds = tab.getBoundingClientRect();
+    const offset = tabBounds.left + tabBounds.width / 2 - (listBounds.left + listBounds.width / 2);
+    list.scrollBy({ left: offset, behavior: "smooth" });
   }
 
   function deleteCodexTask(taskId: string) {
@@ -1083,22 +1297,98 @@ export default function App() {
   }
 
   function openCodexSettings() {
-    setDraftCodexInstructions(codexInstructions);
     setDraftCodexSandbox(codexSandbox);
     setDraftCodexWorkspaceMode(codexWorkspaceMode);
     setCodexModelPickerOpen(false);
+    setAgentsViewerMode(null);
     closeSkillMenu();
     setCodexSettingsOpen(true);
+    if (workspaceRoot) void refreshAgentsInstructions(workspaceRoot);
   }
 
   function saveCodexSettings() {
-    setCodexInstructions(draftCodexInstructions);
     setCodexSandbox(draftCodexSandbox);
     setCodexWorkspaceMode(draftCodexWorkspaceMode);
-    writeCodexInstructionsStorage(draftCodexInstructions);
     writeCodexSandboxStorage(draftCodexSandbox);
     writeCodexWorkspaceModeStorage(draftCodexWorkspaceMode);
+    closeCodexSettings();
+  }
+
+  function closeCodexSettings() {
+    setAgentsViewerMode(null);
     setCodexSettingsOpen(false);
+  }
+
+  async function refreshAgentsInstructions(root: string) {
+    if (!root) return;
+    setAgentsInstructionsStatus("Loading AGENTS.md...");
+    try {
+      const result = await getWorkspaceAgents(root);
+      if (normalizeCodexWorkspaceRoot(root) !== normalizeCodexWorkspaceRoot(workspaceRootRef.current)) return;
+      const hasLocalChanges = draftAgentsInstructionsRef.current !== agentsInstructionsRef.current;
+      agentsInstructionsRef.current = result.content;
+      setAgentsInstructions(result.content);
+      if (!hasLocalChanges) {
+        draftAgentsInstructionsRef.current = result.content;
+        setDraftAgentsInstructions(result.content);
+      }
+      setGlobalAgentsInstructions(result.global.content);
+      setGlobalAgentsInstructionsStatus(
+        result.global.exists
+          ? result.global.content.trim()
+            ? "Read only"
+            : "Read only - file is empty"
+          : "Global AGENTS.md not found"
+      );
+      setAgentsInstructionsStatus(result.exists ? "Synced with AGENTS.md" : "AGENTS.md will be created when you type");
+    } catch (error) {
+      const message = formatAgentsApiError(error);
+      setAgentsInstructionsStatus(message);
+      setGlobalAgentsInstructionsStatus(message);
+    }
+  }
+
+  function handleAgentsInstructionsChange(value: string) {
+    draftAgentsInstructionsRef.current = value;
+    setDraftAgentsInstructions(value);
+    window.clearTimeout(agentsWriteTimerRef.current);
+    if (!workspaceRoot) {
+      setAgentsInstructionsStatus("No project workspace available");
+      return;
+    }
+    setAgentsInstructionsStatus("Saving AGENTS.md...");
+    const root = workspaceRoot;
+    pendingAgentsWriteRef.current = { root, content: value };
+    agentsWriteTimerRef.current = window.setTimeout(() => {
+      agentsWriteTimerRef.current = 0;
+      pendingAgentsWriteRef.current = null;
+      void persistAgentsInstructions(root, value);
+    }, AGENTS_WRITE_DEBOUNCE_MS);
+  }
+
+  function flushPendingAgentsWrite(keepalive = false) {
+    window.clearTimeout(agentsWriteTimerRef.current);
+    agentsWriteTimerRef.current = 0;
+    const pending = pendingAgentsWriteRef.current;
+    pendingAgentsWriteRef.current = null;
+    if (!pending) return;
+    void updateWorkspaceAgents(pending.root, pending.content, keepalive).catch((error) => {
+      if (!keepalive) setAgentsInstructionsStatus(formatAgentsApiError(error));
+    });
+  }
+
+  async function persistAgentsInstructions(root: string, content: string) {
+    try {
+      const result = await updateWorkspaceAgents(root, content);
+      if (normalizeCodexWorkspaceRoot(root) !== normalizeCodexWorkspaceRoot(workspaceRootRef.current)) return;
+      agentsInstructionsRef.current = result.content;
+      setAgentsInstructions(result.content);
+      if (draftAgentsInstructionsRef.current === result.content) {
+        setAgentsInstructionsStatus("Saved to AGENTS.md");
+      }
+    } catch (error) {
+      setAgentsInstructionsStatus(formatAgentsApiError(error));
+    }
   }
 
   function selectCodexModel(model: CodexModel) {
@@ -1522,6 +1812,8 @@ export default function App() {
       codexThreadTaskIdsRef.current[thread] = taskId;
       updateCodexTask(taskId, (task) => ({ ...task, threadId: thread }));
       const result = await runCodexTurnWithRecovery(taskId, thread, { ...turnPayload, threadId: thread });
+      flushAssistantDeltas();
+      settleAssistantMessage(result.finalMessage, result.durationMs, taskId);
       if (result.appliedFiles?.length) {
         addLog("status", `Applied ${result.appliedFiles.length} Codex file(s)`);
       }
@@ -1566,17 +1858,15 @@ export default function App() {
       model: codexModel || undefined,
       reasoningEffort: codexReasoningEffort || undefined,
       sandbox: codexSandbox,
-      workspaceMode: codexWorkspaceMode,
-      developerInstructions: codexInstructions.trim() || undefined
+      workspaceMode: codexWorkspaceMode
     };
     if (!task.threadId) {
       return (await startCodexThread(threadOptions)).threadId;
     }
-    const { developerInstructions: _developerInstructions, ...resumeOptions } = threadOptions;
     return (
       await resumeCodexThread({
         threadId: task.threadId,
-        ...resumeOptions
+        ...threadOptions
       })
     ).threadId;
   }
@@ -1612,6 +1902,26 @@ export default function App() {
       }
       return { ...task, chatMessages: next.slice(-31) };
     });
+  }
+
+  function queueAssistantDelta(text: string, taskId?: string) {
+    if (!text || !taskId) return;
+    codexDeltaBuffersRef.current[taskId] = `${codexDeltaBuffersRef.current[taskId] || ""}${text}`;
+    if (codexDeltaFlushFrameRef.current) return;
+    codexDeltaFlushFrameRef.current = window.requestAnimationFrame(() => {
+      codexDeltaFlushFrameRef.current = 0;
+      flushAssistantDeltas();
+    });
+  }
+
+  function flushAssistantDeltas() {
+    window.cancelAnimationFrame(codexDeltaFlushFrameRef.current);
+    codexDeltaFlushFrameRef.current = 0;
+    const buffers = codexDeltaBuffersRef.current;
+    codexDeltaBuffersRef.current = {};
+    for (const [taskId, text] of Object.entries(buffers)) {
+      appendAssistantDelta(text, taskId);
+    }
   }
 
   function settleAssistantMessage(finalMessage: string, elapsedMs?: number, taskId = activeCodexTask?.id) {
@@ -1733,7 +2043,7 @@ export default function App() {
           </button>
           <button className={leftView === "codex" ? "active" : ""} onClick={() => setLeftView("codex")} type="button">
             <Sparkles size={15} />
-            Codex Edit
+            Codex
           </button>
         </div>
 
@@ -1781,10 +2091,14 @@ export default function App() {
           <div className="codex-workspace">
             <section className="panel codex-panel left-codex-panel">
               <div className="codex-task-bar" aria-label="Codex tasks">
-                <div className="codex-task-list">
+                <div className="codex-task-list" ref={codexTaskListRef}>
                   {codexTasks.map((task) => (
                     <div
                       key={task.id}
+                      ref={(node) => {
+                        if (node) codexTaskTabRefs.current.set(task.id, node);
+                        else codexTaskTabRefs.current.delete(task.id);
+                      }}
                       className={task.id === activeCodexTask?.id ? "codex-task-tab active" : "codex-task-tab"}
                       title={task.title}
                     >
@@ -1824,29 +2138,13 @@ export default function App() {
               ) : null}
               <div className="chat-panel" ref={chatPanelRef} aria-live="polite">
                 {chatMessages.length ? (
-                  chatMessages.map((message) => (
-                    <article key={message.id} className={`chat-message ${message.role}`}>
-                      <div className="chat-message-meta">
-                        <span>{message.role === "user" ? "You" : "Codex"}</span>
-                        {message.elapsedMs != null ? <small>{formatElapsedTime(message.elapsedMs)}</small> : null}
-                      </div>
-                      {message.element ? (
-                        <div className="chat-element-summary">
-                          <strong>{message.element.tagName}</strong>
-                          <code>{message.element.selector}</code>
-                          {message.element.source ? <small>{message.element.source}</small> : null}
-                        </div>
-                      ) : null}
-                      {message.role === "assistant" ? (
-                        message.content ? (
-                          <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
-                        ) : (
-                          <p className="streaming-placeholder">Thinking...</p>
-                        )
-                      ) : (
-                        <p>{message.content}</p>
-                      )}
-                    </article>
+                  chatMessages.map((message, index) => (
+                    <CodexChatMessageView
+                      key={message.id}
+                      message={message}
+                      streaming={busy && message.role === "assistant" && index === chatMessages.length - 1}
+                      activityElapsedMs={codexActivityElapsedMs}
+                    />
                   ))
                 ) : (
                   <div className="chat-empty">Codex responses will stream here.</div>
@@ -2010,17 +2308,19 @@ export default function App() {
                   >
                     <ImageUp size={15} />
                   </button>
-                  {canCreateCodexTask ? (
-                    <button
-                      className="icon-button codex-new-thread-button"
-                      type="button"
-                      onClick={createCodexTask}
-                      title="New Codex task"
-                      aria-label="New Codex task"
-                    >
-                      <Plus size={15} />
-                    </button>
-                  ) : null}
+                  <button
+                    className="icon-button codex-new-thread-button"
+                    type="button"
+                    onClick={createCodexTask}
+                    title={canCreateCodexTask ? "New Codex thread" : `Maximum of ${MAX_CODEX_TASKS} Codex threads reached`}
+                    data-tooltip={
+                      canCreateCodexTask ? "New Codex thread" : `Maximum of ${MAX_CODEX_TASKS} Codex threads reached`
+                    }
+                    aria-label={canCreateCodexTask ? "New Codex thread" : `Maximum of ${MAX_CODEX_TASKS} Codex threads reached`}
+                    disabled={!canCreateCodexTask}
+                  >
+                    <Plus size={15} />
+                  </button>
                   <button
                     className="icon-button codex-send-button"
                     onClick={handleRunCodex}
@@ -2053,7 +2353,7 @@ export default function App() {
                 ) : null}
               </div>
               {codexSettingsOpen ? (
-                <div className="codex-settings-backdrop" onMouseDown={() => setCodexSettingsOpen(false)}>
+                <div className="codex-settings-backdrop" onMouseDown={closeCodexSettings}>
                   <aside
                     className="codex-settings-drawer"
                     aria-label="Codex settings"
@@ -2062,12 +2362,12 @@ export default function App() {
                     <div className="codex-settings-header">
                       <div>
                         <strong>Codex settings</strong>
-                        <span>Applied when a new thread starts</span>
+                        <span>Project instructions sync directly with AGENTS.md</span>
                       </div>
                       <button
                         type="button"
                         className="icon-button"
-                        onClick={() => setCodexSettingsOpen(false)}
+                        onClick={closeCodexSettings}
                         title="Close settings"
                       >
                         <X size={14} />
@@ -2095,18 +2395,63 @@ export default function App() {
                         <option value="workspace-write">Workspace write</option>
                       </select>
                     </label>
-                    <label className="codex-instructions-field">
-                      <span>
-                        System prompt
-                        <small>New threads only</small>
-                      </span>
+                    <section className="agents-document agents-document-global" aria-labelledby="global-agents-title">
+                      <div className="agents-document-header">
+                        <div>
+                          <strong id="global-agents-title">Global AGENTS.md</strong>
+                          <small>{globalAgentsInstructionsStatus}</small>
+                        </div>
+                        <button
+                          type="button"
+                          className="icon-button agents-expand-button"
+                          onClick={() => setAgentsViewerMode("global")}
+                          title="Expand global AGENTS.md"
+                          aria-label="Expand global AGENTS.md"
+                        >
+                          <Maximize2 size={14} />
+                        </button>
+                      </div>
                       <textarea
-                        className="codex-instructions-input"
-                        value={draftCodexInstructions}
-                        placeholder="Optional system instructions for new Codex threads, e.g. prefer minimal scoped edits"
-                        onChange={(event) => setDraftCodexInstructions(event.target.value)}
+                        className="agents-document-input agents-document-input-global"
+                        value={globalAgentsInstructions}
+                        placeholder="No global rules configured in ~/.codex/AGENTS.md"
+                        readOnly
+                        aria-label="Global AGENTS.md rules"
                       />
-                    </label>
+                      <div className="agents-document-meta">
+                        <span>{globalAgentsStats.lines} lines</span>
+                        <span>{globalAgentsStats.characters} characters</span>
+                      </div>
+                    </section>
+                    <section className="agents-document agents-document-project" aria-labelledby="project-agents-title">
+                      <div className="agents-document-header">
+                        <div>
+                          <strong id="project-agents-title">Project AGENTS.md</strong>
+                          <small>{agentsInstructionsStatus}</small>
+                        </div>
+                        <button
+                          type="button"
+                          className="icon-button agents-expand-button"
+                          onClick={() => setAgentsViewerMode("project")}
+                          title="Expand project AGENTS.md editor"
+                          aria-label="Expand project AGENTS.md editor"
+                        >
+                          <Maximize2 size={14} />
+                        </button>
+                      </div>
+                      <textarea
+                        className="agents-document-input agents-document-input-project"
+                        value={draftAgentsInstructions}
+                        placeholder="Project instructions for Codex"
+                        onChange={(event) => handleAgentsInstructionsChange(event.target.value)}
+                        disabled={!workspaceRoot}
+                        aria-label="Project AGENTS.md rules"
+                      />
+                      <div className="agents-document-meta">
+                        <span>{projectAgentsStats.lines} lines</span>
+                        <span>{projectAgentsStats.characters} characters</span>
+                      </div>
+                    </section>
                     <div className="codex-settings-actions">
                       <button
                         type="button"
@@ -2119,6 +2464,71 @@ export default function App() {
                       </button>
                     </div>
                   </aside>
+                  {agentsViewerMode
+                    ? createPortal(
+                    <div
+                      className="agents-viewer-backdrop"
+                      onMouseDown={(event) => {
+                        event.stopPropagation();
+                        setAgentsViewerMode(null);
+                      }}
+                    >
+                      <section
+                        className="agents-viewer"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="agents-viewer-title"
+                        onMouseDown={(event) => event.stopPropagation()}
+                      >
+                        <header className="agents-viewer-header">
+                          <div>
+                            <strong id="agents-viewer-title">
+                              {agentsViewerMode === "global" ? "Global AGENTS.md" : "Project AGENTS.md"}
+                            </strong>
+                            <span>
+                              {agentsViewerMode === "global" ? globalAgentsInstructionsStatus : agentsInstructionsStatus}
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            className="icon-button"
+                            onClick={() => setAgentsViewerMode(null)}
+                            title="Close expanded view"
+                            aria-label="Close expanded view"
+                          >
+                            <X size={16} />
+                          </button>
+                        </header>
+                        <textarea
+                          className="agents-viewer-input"
+                          value={agentsViewerMode === "global" ? globalAgentsInstructions : draftAgentsInstructions}
+                          placeholder={
+                            agentsViewerMode === "global"
+                              ? "No global rules configured in ~/.codex/AGENTS.md"
+                              : "Project instructions for Codex"
+                          }
+                          readOnly={agentsViewerMode === "global"}
+                          disabled={agentsViewerMode === "project" && !workspaceRoot}
+                          onChange={
+                            agentsViewerMode === "project"
+                              ? (event) => handleAgentsInstructionsChange(event.target.value)
+                              : undefined
+                          }
+                          autoFocus
+                          aria-label={`${agentsViewerMode === "global" ? "Global" : "Project"} AGENTS.md rules`}
+                        />
+                        <footer className="agents-viewer-footer">
+                          <span>{agentsViewerMode === "global" ? "~/.codex/AGENTS.md" : `${workspaceRoot}/AGENTS.md`}</span>
+                          <span>
+                            {agentsViewerMode === "global" ? globalAgentsStats.lines : projectAgentsStats.lines} lines ·{" "}
+                            {agentsViewerMode === "global" ? globalAgentsStats.characters : projectAgentsStats.characters} characters
+                          </span>
+                        </footer>
+                      </section>
+                    </div>,
+                    document.body
+                  )
+                    : null}
                 </div>
               ) : null}
             </section>
@@ -2782,6 +3192,13 @@ function formatElapsedTime(ms: number) {
   return `${minutes}m ${rest}s`;
 }
 
+function codexActivityLabel(elapsedMs: number, hasContent: boolean) {
+  if (hasContent) return "Working";
+  if (elapsedMs < 8000) return "Starting Codex";
+  if (elapsedMs < 30000) return "Codex is thinking";
+  return "Still working";
+}
+
 function visibleDisplayValue(value = "") {
   const normalized = value.trim();
   return normalized && normalized !== "none" ? normalized : "block";
@@ -3000,20 +3417,19 @@ function contextSelectorVariants(selector: string) {
   return Array.from(variants);
 }
 
-function readCodexInstructionsStorage() {
-  try {
-    return window.localStorage.getItem(CODEX_INSTRUCTIONS_STORAGE_KEY) || "";
-  } catch {
-    return "";
+function formatAgentsApiError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.includes("API route not found") || message.includes("/api/workspace/agents")) {
+    return "Restart Web No Code to enable AGENTS.md sync";
   }
+  return message.length > 100 ? `${message.slice(0, 97)}...` : message;
 }
 
-function writeCodexInstructionsStorage(value: string) {
-  try {
-    window.localStorage.setItem(CODEX_INSTRUCTIONS_STORAGE_KEY, value);
-  } catch {
-    // Local storage can be unavailable in locked-down browser contexts.
-  }
+function getDocumentStats(content: string) {
+  return {
+    lines: content ? content.split(/\r?\n/).length : 0,
+    characters: content.length
+  };
 }
 
 function readCodexSandboxStorage(): CodexSandbox {

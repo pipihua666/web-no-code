@@ -16,6 +16,13 @@ export type TargetAlias = {
   replacement: string;
 };
 
+export type WorkspaceAgentsEvent = {
+  type: "agents-updated";
+  root: string;
+  content: string;
+  exists: boolean;
+};
+
 export async function getCodexStatus(mode: ProviderMode) {
   return request(`/api/codex/status?mode=${encodeURIComponent(mode)}`);
 }
@@ -45,13 +52,34 @@ export async function getCodexSkills() {
   }>;
 }
 
+export async function getWorkspaceAgents(root: string) {
+  return request(`/api/workspace/agents?root=${encodeURIComponent(root)}`) as Promise<{
+    root: string;
+    path: string;
+    content: string;
+    exists: boolean;
+    global: {
+      path: string;
+      content: string;
+      exists: boolean;
+    };
+  }>;
+}
+
+export async function updateWorkspaceAgents(root: string, content: string, keepalive = false) {
+  return request("/api/workspace/agents", {
+    method: "PUT",
+    body: JSON.stringify({ root, content }),
+    keepalive
+  }) as Promise<{ root: string; path: string; content: string; exists: boolean }>;
+}
+
 export async function startCodexThread(payload: {
   cwd: string;
   mode: ProviderMode;
   model?: string;
   reasoningEffort?: string;
   sandbox?: string;
-  developerInstructions?: string;
   workspaceMode?: "shadow" | "direct";
 }) {
   return request("/api/codex/thread", {
@@ -210,10 +238,16 @@ export async function replaceAsset(root: string, target: string, file: File, tar
   }) as Promise<{ relativePath: string; path: string }>;
 }
 
-export function createEventStream(onEvent: (event: CodexEvent) => void) {
+export function createEventStream(
+  onEvent: (event: CodexEvent) => void,
+  onWorkspaceEvent?: (event: WorkspaceAgentsEvent) => void
+) {
   const source = new EventSource(eventStreamUrl());
   source.addEventListener("codex", (event) => {
     onEvent(JSON.parse((event as MessageEvent).data) as CodexEvent);
+  });
+  source.addEventListener("workspace", (event) => {
+    onWorkspaceEvent?.(JSON.parse((event as MessageEvent).data) as WorkspaceAgentsEvent);
   });
   return () => source.close();
 }

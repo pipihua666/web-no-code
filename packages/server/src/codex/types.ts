@@ -49,11 +49,10 @@ export type StartThreadOptions = {
   model?: string;
   reasoningEffort?: string;
   mode?: ProviderMode;
-  developerInstructions?: string;
   workspaceMode?: WorkspaceMode;
 };
 
-export type ResumeThreadOptions = Omit<StartThreadOptions, "developerInstructions"> & {
+export type ResumeThreadOptions = StartThreadOptions & {
   threadId: string;
 };
 

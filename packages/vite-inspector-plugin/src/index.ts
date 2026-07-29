@@ -849,6 +849,9 @@ function openEditor(serverUrl: string, shouldOpen: boolean, width?: WebNoCodePre
 
 const runtimeSource = String.raw`
 const PROJECT_INFO = __WEB_NO_CODE_PROJECT_INFO__;
+const SOURCE_FILE_CACHE_LIMIT = 24;
+const STYLE_MODULE_CACHE_LIMIT = 16;
+const SOURCE_MAP_POSITION_CACHE_LIMIT = 1000;
 
 const STATE = {
   enabled: false,
@@ -860,12 +863,15 @@ const STATE = {
   badge: null,
   measureLayer: null,
   measuring: false,
+  hoverFrame: 0,
   drag: null,
   suppressClickUntil: 0,
   vueInspectorListeners: null,
   vueInspectorListenersLoaded: false,
   styleModules: new Map(),
-  sourceMapPositions: new Map()
+  sourceMapPositions: new Map(),
+  sourceFiles: new Map(),
+  selectedRefreshTimer: 0
 };
 
 function init() {
@@ -942,6 +948,7 @@ function installHmrUpdateFallback() {
     refreshTimer = window.setTimeout(() => {
       STATE.styleModules.clear();
       STATE.sourceMapPositions.clear();
+      STATE.sourceFiles.clear();
       if (STATE.selected) {
         post("selected", serializeElement(STATE.selected));
       }
@@ -959,6 +966,7 @@ function handleMessage(event) {
     if (!STATE.enabled) {
       STATE.hover = null;
       clearSelectedElement();
+      releaseInspectorCaches();
     }
   }
   if (message.type === "inspector:style-preview") {
@@ -1155,8 +1163,14 @@ function handleMouseMove(event) {
   const target = event.target;
   if (!isInspectable(target)) return;
   STATE.hover = target;
-  drawOverlay(target, false);
-  updateDraggableCursor(target);
+  if (STATE.hoverFrame) return;
+  STATE.hoverFrame = requestAnimationFrame(() => {
+    STATE.hoverFrame = 0;
+    const hover = STATE.hover;
+    if (!isInspectorActive() || STATE.drag || !isInspectable(hover)) return;
+    drawOverlay(hover, STATE.selected === hover);
+    updateDraggableCursor(hover);
+  });
 }
 
 function handleMouseDown(event) {
@@ -1296,9 +1310,17 @@ function selectElement(element) {
 
 function clearSelectedElement() {
   STATE.selected = null;
+  clearTimeout(STATE.selectedRefreshTimer);
+  STATE.selectedRefreshTimer = 0;
   hideOverlay();
   updateDraggableCursor(STATE.hover);
   post("selected", null);
+}
+
+function releaseInspectorCaches() {
+  STATE.styleModules.clear();
+  STATE.sourceMapPositions.clear();
+  STATE.sourceFiles.clear();
 }
 
 function findDeepestChildAtPoint(root, x, y) {
@@ -1688,7 +1710,7 @@ function safeMatchedStyleDeclarations(element) {
   }
 }
 
-function fallbackComputedDeclarations(element) {
+function fallbackComputedDeclarations(element, includeSourceStyles = true) {
   const computed = getComputedStyle(element);
   const styles = {};
   const styleSources = {};
@@ -1698,9 +1720,11 @@ function fallbackComputedDeclarations(element) {
     styles[property] = value;
   }
 
-  const fallback = sourceStyleDeclarations(element, styleSources);
-  Object.assign(styles, fallback.styles);
-  Object.assign(styleSources, fallback.styleSources);
+  if (includeSourceStyles) {
+    const fallback = sourceStyleDeclarations(element, styleSources);
+    Object.assign(styles, fallback.styles);
+    Object.assign(styleSources, fallback.styleSources);
+  }
   return { styles, styleSources };
 }
 
@@ -1935,7 +1959,7 @@ function matchedStyleDeclarations(element) {
     styleSources[property] = fallback.styleSources[property];
   }
 
-  const runtime = fallbackComputedDeclarations(element);
+  const runtime = fallbackComputedDeclarations(element, false);
   for (const [property, value] of Object.entries(runtime.styles)) {
     if (styles[property]) continue;
     styles[property] = value;
@@ -1954,7 +1978,7 @@ function sourceStyleDeclarations(element, existingSources) {
   if (!classNames.length) return { styles, styleSources };
 
   const sourceFile = bestElementSource(element).file || "";
-  const sources = sourceStyleSources(sourceFile);
+  const sources = sourceStyleSources(sourceFile, element);
   const declarations = sourceStyleDeclarationCandidates(sourceFile, classNames, sources, element);
   declarations.sort((left, right) => {
     if (left.filePriority !== right.filePriority) return left.filePriority - right.filePriority;
@@ -1977,10 +2001,10 @@ function sourceStyleDeclarations(element, existingSources) {
   return { styles, styleSources };
 }
 
-function sourceStyleDeclarationCandidates(elementSourceFile, classNames, sources = sourceStyleSources(elementSourceFile), element = null) {
+function sourceStyleDeclarationCandidates(elementSourceFile, classNames, sources, element = null) {
   const candidates = [];
   const ancestorClassNames = element ? elementAncestorClassNames(element) : [];
-  for (const item of sources) {
+  for (const item of sources || sourceStyleSources(elementSourceFile, element)) {
     if (!item.file || !item.source) continue;
     const filePriority = sourceFilePriority(item.file, elementSourceFile);
     for (const block of sourceStyleBlocks(item.source, classNames, ancestorClassNames, element)) {
@@ -1998,20 +2022,25 @@ function sourceStyleDeclarationCandidates(elementSourceFile, classNames, sources
   return candidates;
 }
 
-function sourceStyleSources(elementSourceFile) {
+function sourceStyleSources(elementSourceFile, element = null) {
   const sources = new Map();
   if (elementSourceFile) sources.set(elementSourceFile, readSourceFile(elementSourceFile));
   for (const sheet of Array.from(document.styleSheets)) {
+    if (element) {
+      let rules;
+      try {
+        rules = sheet.cssRules;
+      } catch (_) {
+        continue;
+      }
+      if (!sheetMatchesElement(element, Array.from(rules))) continue;
+    }
     const file = fallbackStyleFile(sheet);
     if (!file) continue;
     const ownerText = styleOwner(sheet)?.textContent || "";
     sources.set(file, readSourceFile(file) || ownerText);
   }
   return Array.from(sources, ([file, source]) => ({ file, source }));
-}
-
-function sourceStyleFiles(elementSourceFile) {
-  return sourceStyleSources(elementSourceFile).map((item) => item.file);
 }
 
 function sourceFilePriority(file, elementSourceFile) {
@@ -2332,13 +2361,34 @@ function readSourceDeclarationForRule(element, file, property) {
 }
 
 function readSourceFile(file) {
+  if (!file) return "";
+  if (STATE.sourceFiles.has(file)) return readCachedValue(STATE.sourceFiles, file) || "";
+
   const rawSource = requestSourceText("/@web-no-code/source/raw?file=" + encodeURIComponent(file));
-  if (rawSource) return rawSource;
+  if (rawSource) {
+    setBoundedCache(STATE.sourceFiles, file, rawSource, SOURCE_FILE_CACHE_LIMIT);
+    return rawSource;
+  }
 
   const rawModuleUrl = rawSourceModuleUrl(file);
-  if (!rawModuleUrl) return "";
-  const viteRawSource = requestSourceText(rawModuleUrl);
-  return unwrapViteRawSource(viteRawSource);
+  const source = rawModuleUrl ? unwrapViteRawSource(requestSourceText(rawModuleUrl)) : "";
+  setBoundedCache(STATE.sourceFiles, file, source, SOURCE_FILE_CACHE_LIMIT);
+  return source;
+}
+
+function readCachedValue(cache, key) {
+  const value = cache.get(key);
+  cache.delete(key);
+  cache.set(key, value);
+  return value;
+}
+
+function setBoundedCache(cache, key, value, limit) {
+  cache.delete(key);
+  cache.set(key, value);
+  while (cache.size > limit) {
+    cache.delete(cache.keys().next().value);
+  }
 }
 
 function requestSourceText(url) {
@@ -2565,26 +2615,32 @@ function readInlineSourceMapFromCss(cssText) {
   const match = cssText.match(/sourceMappingURL=data:application\/json[^,]*,([^\s*]+)/);
   if (!match) return null;
   try {
-    return JSON.parse(decodeURIComponent(match[1]));
+    return compactSourceMap(JSON.parse(decodeURIComponent(match[1])));
   } catch (_) {
     try {
-      return JSON.parse(atob(match[1]));
+      return compactSourceMap(JSON.parse(atob(match[1])));
     } catch (_) {
       return null;
     }
   }
 }
 
+function compactSourceMap(map) {
+  if (!map || typeof map !== "object") return null;
+  delete map.sourcesContent;
+  return map;
+}
+
 function readStyleModule(sheet) {
   const key = styleModuleKey(sheet);
-  return key ? STATE.styleModules.get(key) : null;
+  return key && STATE.styleModules.has(key) ? readCachedValue(STATE.styleModules, key) : null;
 }
 
 function loadStyleModule(sheet) {
   const key = styleModuleKey(sheet);
   if (!key || !isSafeStyleModuleId(key)) return;
   const cached = STATE.styleModules.get(key);
-  if (cached?.pending || cached?.map) return;
+  if (cached) return;
 
   const url = styleModuleUrl(key);
   if (!url) return;
@@ -2593,21 +2649,20 @@ function loadStyleModule(sheet) {
     .then((source) => {
       const css = extractViteCss(source);
       const map = css ? readInlineSourceMapFromCss(css) : null;
-      STATE.styleModules.set(key, { css, map });
-      if (STATE.selected) post("selected", serializeElement(STATE.selected));
+      setBoundedCache(STATE.styleModules, key, { map }, STYLE_MODULE_CACHE_LIMIT);
+      scheduleSelectedRefresh();
     })
     .catch(() => {
-      STATE.styleModules.set(key, { css: "", map: null });
+      setBoundedCache(STATE.styleModules, key, { map: null }, STYLE_MODULE_CACHE_LIMIT);
     });
-  STATE.styleModules.set(key, { pending });
+  setBoundedCache(STATE.styleModules, key, { pending }, STYLE_MODULE_CACHE_LIMIT);
 }
 
 function resolveServerSourceMapPosition(sheet, line, column) {
   const id = styleModuleKey(sheet) || sheet.href || "";
   if (!id || !line || !column || !isSafeStyleModuleId(id)) return null;
   const key = id + ":" + line + ":" + column;
-  const cached = STATE.sourceMapPositions.get(key);
-  if (cached !== undefined) return cached;
+  if (STATE.sourceMapPositions.has(key)) return readCachedValue(STATE.sourceMapPositions, key);
 
   const pending = fetch(
     "/@web-no-code/source-map/original-position?id=" +
@@ -2627,15 +2682,23 @@ function resolveServerSourceMapPosition(sheet, line, column) {
             column: position.column
           }
         : null;
-      STATE.sourceMapPositions.set(key, normalized);
-      if (STATE.selected) post("selected", serializeElement(STATE.selected));
+      setBoundedCache(STATE.sourceMapPositions, key, normalized, SOURCE_MAP_POSITION_CACHE_LIMIT);
+      scheduleSelectedRefresh();
     })
     .catch(() => {
-      STATE.sourceMapPositions.set(key, null);
+      setBoundedCache(STATE.sourceMapPositions, key, null, SOURCE_MAP_POSITION_CACHE_LIMIT);
     });
 
-  STATE.sourceMapPositions.set(key, null);
+  setBoundedCache(STATE.sourceMapPositions, key, null, SOURCE_MAP_POSITION_CACHE_LIMIT);
   return null;
+}
+
+function scheduleSelectedRefresh() {
+  clearTimeout(STATE.selectedRefreshTimer);
+  STATE.selectedRefreshTimer = window.setTimeout(() => {
+    STATE.selectedRefreshTimer = 0;
+    if (STATE.selected) post("selected", serializeElement(STATE.selected));
+  }, 50);
 }
 
 function warmStyleSourceMaps(element) {

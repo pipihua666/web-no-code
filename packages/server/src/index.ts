@@ -1,12 +1,12 @@
 import express from "express";
 import multer from "multer";
-import { existsSync } from "node:fs";
+import { existsSync, watch, type FSWatcher } from "node:fs";
 import { mkdir, readdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { dirname, join, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { nanoid } from "nanoid";
-import { addEventClient } from "./events";
+import { addEventClient, emitWorkspaceEvent } from "./events";
 import { codexBridge } from "./codex/bridge";
 import type { ProviderMode } from "./codex/types";
 import {
@@ -29,6 +29,8 @@ type RegisteredTarget = { root: string; url: string; width?: TargetWidth; aliase
 
 const targets: RegisteredTarget[] = [];
 const codexAttachmentsDir = join(tmpdir(), "web-no-code-codex-attachments");
+const agentsWatchers = new Map<string, FSWatcher>();
+const agentsWatchTimers = new Map<string, NodeJS.Timeout>();
 let shuttingDown = false;
 let httpServer: Server | null = null;
 registerTargetFromEnv();
@@ -125,6 +127,31 @@ app.get("/api/codex/skills", async (_request, response) => {
   }
 });
 
+app.get("/api/workspace/agents", async (request, response) => {
+  try {
+    const location = await resolveAgentsLocation(request.query.root);
+    ensureAgentsWatcher(location.root);
+    const [project, global] = await Promise.all([readAgentsFile(location), readGlobalAgentsFile()]);
+    response.json({ ...project, global });
+  } catch (error) {
+    response.status(400).json(errorPayload(error));
+  }
+});
+
+app.put("/api/workspace/agents", async (request, response) => {
+  try {
+    const location = await resolveAgentsLocation(request.body.root);
+    const content = typeof request.body.content === "string" ? request.body.content : "";
+    await writeFile(location.path, content, "utf8");
+    ensureAgentsWatcher(location.root);
+    const payload = { ...location, content, exists: true };
+    emitWorkspaceEvent({ type: "agents-updated", root: location.root, content, exists: true });
+    response.json(payload);
+  } catch (error) {
+    response.status(400).json(errorPayload(error));
+  }
+});
+
 app.post("/api/codex/thread", async (request, response) => {
   try {
     response.json(
@@ -133,7 +160,6 @@ app.post("/api/codex/thread", async (request, response) => {
         sandbox: request.body.sandbox || "workspace-write",
         model: request.body.model || undefined,
         reasoningEffort: normalizeOptionalString(request.body.reasoningEffort),
-        developerInstructions: normalizeOptionalString(request.body.developerInstructions),
         workspaceMode: request.body.workspaceMode === "direct" ? "direct" : "shadow",
         mode: "app-server"
       })
@@ -371,6 +397,10 @@ async function shutdown(code: number) {
     setTimeout(resolveShutdown, 1000).unref();
   });
   await codexBridge.dispose();
+  for (const watcher of agentsWatchers.values()) watcher.close();
+  for (const timer of agentsWatchTimers.values()) clearTimeout(timer);
+  agentsWatchers.clear();
+  agentsWatchTimers.clear();
   await cleanupTemporaryFiles();
   process.exit(code);
 }
@@ -442,6 +472,69 @@ function normalizeOptionalString(value: unknown) {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
   return trimmed || undefined;
+}
+
+async function resolveAgentsLocation(value: unknown) {
+  const requestedRoot = typeof value === "string" ? value.trim() : "";
+  if (!requestedRoot) throw new Error("Missing workspace root");
+  const root = await realpath(resolve(requestedRoot)).catch(() => resolve(requestedRoot));
+  const allowedRoots = await Promise.all(
+    [process.cwd(), ...targets.map((target) => target.root)].map((candidate) =>
+      realpath(resolve(candidate)).catch(() => resolve(candidate))
+    )
+  );
+  if (!allowedRoots.includes(root)) throw new Error("Workspace root is not registered");
+  return { root, path: join(root, "AGENTS.md") };
+}
+
+async function readAgentsFile(location: { root: string; path: string }) {
+  const content = await readFile(location.path, "utf8").catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return "";
+    throw error;
+  });
+  return { ...location, content, exists: existsSync(location.path) };
+}
+
+async function readGlobalAgentsFile() {
+  const path = join(homedir(), ".codex", "AGENTS.md");
+  const content = await readFile(path, "utf8").catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return "";
+    throw error;
+  });
+  return { path, content, exists: existsSync(path) };
+}
+
+function ensureAgentsWatcher(root: string) {
+  if (agentsWatchers.has(root)) return;
+  const watcher = watch(root, { persistent: false }, (_event, filename) => {
+    if (String(filename || "") !== "AGENTS.md") return;
+    const existingTimer = agentsWatchTimers.get(root);
+    if (existingTimer) clearTimeout(existingTimer);
+    agentsWatchTimers.set(
+      root,
+      setTimeout(() => {
+        agentsWatchTimers.delete(root);
+        const location = { root, path: join(root, "AGENTS.md") };
+        void readAgentsFile(location)
+          .then((payload) => {
+            emitWorkspaceEvent({
+              type: "agents-updated",
+              root,
+              content: payload.content,
+              exists: payload.exists
+            });
+          })
+          .catch(() => {
+            // A transient filesystem error will be retried on the next change.
+          });
+      }, 80)
+    );
+  });
+  watcher.on("error", () => {
+    watcher.close();
+    agentsWatchers.delete(root);
+  });
+  agentsWatchers.set(root, watcher);
 }
 
 function parseStringArray(value: unknown) {

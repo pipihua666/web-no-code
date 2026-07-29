@@ -31,3 +31,10 @@ export function emitCodexEvent(event: CodexEvent) {
     client.response.write(payload);
   }
 }
+
+export function emitWorkspaceEvent(event: { type: "agents-updated"; root: string; content: string; exists: boolean }) {
+  const payload = `event: workspace\ndata: ${JSON.stringify(event)}\n\n`;
+  for (const client of clients.values()) {
+    client.response.write(payload);
+  }
+}

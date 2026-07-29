@@ -47,6 +47,8 @@ type PendingRequest = {
 type AppThread = {
   threadId: string;
   cwd: string;
+  model?: string;
+  reasoningEffort?: string;
   workspaceMode: WorkspaceMode;
   sandbox: SandboxMode;
   shadow: ShadowWorkspace | null;
@@ -224,7 +226,6 @@ export class AppServerProvider implements CodexProvider {
       approvalPolicy: "never",
       sandbox: toCodexSandbox(options.sandbox || "workspace-write"),
       serviceName: "Web No Code",
-      developerInstructions: options.developerInstructions || null,
       ephemeral: false
     })) as {
       thread?: {
@@ -240,6 +241,8 @@ export class AppServerProvider implements CodexProvider {
     this.threads.set(threadId, {
       threadId,
       cwd: options.cwd,
+      model: options.model || undefined,
+      reasoningEffort: options.reasoningEffort || undefined,
       workspaceMode,
       sandbox: options.sandbox || "workspace-write",
       shadow,
@@ -259,6 +262,18 @@ export class AppServerProvider implements CodexProvider {
   async resumeThread(options: ResumeThreadOptions): Promise<ThreadHandle> {
     await this.ensureStarted();
     const existing = this.threads.get(options.threadId);
+    const requestedModel = options.model || undefined;
+    const requestedReasoningEffort = options.reasoningEffort || undefined;
+    const requestedSandbox = options.sandbox || "workspace-write";
+    if (
+      existing &&
+      existing.cwd === options.cwd &&
+      existing.model === requestedModel &&
+      existing.reasoningEffort === requestedReasoningEffort &&
+      existing.sandbox === requestedSandbox
+    ) {
+      return { threadId: existing.threadId, provider: this.name };
+    }
     const workspaceMode = existing?.workspaceMode || resolveWorkspaceMode(options.workspaceMode);
     const shadow = existing?.shadow ?? (workspaceMode === "shadow" ? await createShadowWorkspace(options.cwd) : null);
     const codexRoot = shadow?.shadowRoot || options.cwd;
@@ -284,8 +299,10 @@ export class AppServerProvider implements CodexProvider {
     this.threads.set(threadId, {
       threadId,
       cwd: options.cwd,
+      model: requestedModel,
+      reasoningEffort: requestedReasoningEffort,
       workspaceMode,
-      sandbox: existing?.sandbox || options.sandbox || "workspace-write",
+      sandbox: requestedSandbox,
       shadow,
       codexRoot,
       diff: existing?.diff || "",
@@ -630,14 +647,6 @@ export class AppServerProvider implements CodexProvider {
   }
 
   private handleNotification(method: string, params: Record<string, unknown> | undefined) {
-    this.sink.emit({
-      type: "app-server-notification",
-      threadId: extractThreadId(params),
-      turnId: extractTurnId(params),
-      method,
-      params
-    });
-
     if (method === "item/agentMessage/delta") {
       const text = extractText(params);
       const threadId = extractThreadId(params);
