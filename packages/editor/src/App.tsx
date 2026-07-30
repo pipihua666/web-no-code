@@ -498,7 +498,7 @@ export default function App() {
   useEffect(() => {
     const smallScreenQuery = window.matchMedia(SMALL_SCREEN_MEDIA_QUERY);
     const handleScreenSizeChange = (event: MediaQueryListEvent) => {
-      if (event.matches) setCssRulesDrawerOpen(true);
+      if (event.matches) setCssRulesDrawerOpen(false);
     };
 
     smallScreenQuery.addEventListener("change", handleScreenSizeChange);
@@ -1769,11 +1769,13 @@ export default function App() {
     };
     if (turnBusy && threadId) {
       if (!input.trim() && !attachments.length) {
+        delete codexDeltaBuffersRef.current[taskId];
+        settleAssistantMessage("Interrupted", undefined, taskId);
+        codexTurnBusyRef.current[taskId] = false;
+        setBusy(false, taskId);
         try {
           await interruptCodexTurn(threadId);
           addLog("status", "Interrupted current Codex turn");
-          codexTurnBusyRef.current[taskId] = false;
-          setBusy(false, taskId);
         } catch (error) {
           addLog("error", error instanceof Error ? error.message : String(error));
         }
@@ -2964,7 +2966,8 @@ function parseDeviceWidth(search: string): DeviceWidth {
   const value = new URLSearchParams(search).get("width");
   if (value === "full") return "full";
   if (value === "750") return 750;
-  return 375;
+  if (value === "375") return 375;
+  return window.matchMedia("(max-width: 879px)").matches ? "full" : 375;
 }
 
 function withEditorPassthroughParams(targetUrl: string, cacheBust = false) {

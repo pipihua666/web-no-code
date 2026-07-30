@@ -133,7 +133,6 @@ import { WebNoCodePreviewWidth, webNoCodeInspector } from "@web-no-code/vite-ins
 webNoCodeInspector({
   enabled: true,
   vueInspector: true,
-  mobileUserAgent: true,
   autoStart: true,
   open: true,
   width: WebNoCodePreviewWidth.Width375,
@@ -146,7 +145,6 @@ webNoCodeInspector({
 | ----------------- | -------------------------------- | ---------------------------------------- |
 | `enabled`         | `true`                           | 是否启用插件；`false` 时不注入页面且不启动编辑器          |
 | `vueInspector`    | `true`                           | 是否启用 Vue 组件源码定位支持                        |
-| `mobileUserAgent` | `true`                           | 模拟 iPhone Safari；可传 `false` 或自定义 UA 字符串  |
 | `autoStart`       | `true`                           | 是否自动启动 Web No Code 服务                    |
 | `open`            | `true`                           | 服务启动后是否自动打开编辑器                           |
 | `width`           | `WebNoCodePreviewWidth.Width375` | 初始预览宽度，可选 `Width375`、`Width750` 或 `Full` |

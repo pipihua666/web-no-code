@@ -22,7 +22,6 @@ export enum WebNoCodePreviewWidth {
 export type WebNoCodeInspectorOptions = {
   enabled?: boolean;
   vueInspector?: boolean;
-  mobileUserAgent?: boolean | string;
   autoStart?: boolean;
   open?: boolean;
   width?: WebNoCodePreviewWidth;
@@ -71,7 +70,6 @@ export function webNoCodeInspector(options: WebNoCodeInspectorOptions = {}): Plu
   if (options.enabled === false) return [];
 
   const vueInspectorEnabled = options.vueInspector ?? true;
-  const mobileUserAgent = options.mobileUserAgent ?? true;
   const autoStart = options.autoStart ?? true;
   const shouldOpen = options.open ?? true;
   const width = normalizePreviewWidth(options.width);
@@ -202,7 +200,7 @@ export function webNoCodeInspector(options: WebNoCodeInspectorOptions = {}): Plu
     transformIndexHtml(html) {
       return html.replace(
         "</head>",
-        `${mobileUserAgent ? mobileUserAgentScript(mobileUserAgent) : ""}<script type="module" src="/@web-no-code/inspector-runtime?v=${Date.now()}"></script></head>`
+        `<script type="module" src="/@web-no-code/inspector-runtime?v=${Date.now()}"></script></head>`
       );
     },
     resolveId(id) {
@@ -616,46 +614,6 @@ function resolveModuleDir() {
 
 function toViteFsModuleId(file: string) {
   return `/@fs/${file.replace(/\\/g, "/")}`;
-}
-
-function mobileUserAgentScript(value: true | string) {
-  const userAgent =
-    value === true
-      ? "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
-      : value;
-  return `<script>${uaShimSource(JSON.stringify(userAgent))}</script>`;
-}
-
-function uaShimSource(userAgent: string) {
-  return `(function(){
-  var ua = ${userAgent};
-  var define = function(target, key, value) {
-    try {
-      Object.defineProperty(target, key, {
-        configurable: true,
-        get: function() { return value; }
-      });
-    } catch (_) {}
-  };
-  define(navigator, "userAgent", ua);
-  define(navigator, "appVersion", ua);
-  define(navigator, "platform", "iPhone");
-  define(navigator, "vendor", "Apple Computer, Inc.");
-  define(navigator, "maxTouchPoints", 5);
-  if (!("ontouchstart" in window)) {
-    try {
-      Object.defineProperty(window, "ontouchstart", {
-        configurable: true,
-        value: null
-      });
-    } catch (_) {}
-  }
-  if (!window.TouchEvent) {
-    try {
-      window.TouchEvent = window.Event;
-    } catch (_) {}
-  }
-})();`;
 }
 
 function inferServerUrl(host: string | boolean | undefined, port: number | undefined) {

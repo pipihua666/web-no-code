@@ -27,25 +27,10 @@ test("omits Vue inspector support when disabled independently", () => {
   assert.equal((plugins[0] as Plugin).name, "web-no-code-inspector");
 });
 
-test("injects the runtime and default mobile user agent", () => {
+test("injects the runtime without overriding the browser user agent", () => {
   const html = transformHtml({ vueInspector: false }, "<html><head></head></html>");
   assert.match(html, /inspector-runtime/);
-  assert.match(html, /iPhone/);
-});
-
-test("supports disabling or customizing the mobile user agent", () => {
-  const disabled = transformHtml(
-    { vueInspector: false, mobileUserAgent: false },
-    "<html><head></head></html>"
-  );
-  assert.match(disabled, /inspector-runtime/);
-  assert.doesNotMatch(disabled, /define\(navigator, "userAgent"/);
-
-  const custom = transformHtml(
-    { vueInspector: false, mobileUserAgent: "WebNoCode Test UA" },
-    "<html><head></head></html>"
-  );
-  assert.match(custom, /WebNoCode Test UA/);
+  assert.doesNotMatch(html, /navigator\.userAgent|iPhone/);
 });
 
 test("resolves a root-relative Vite URL produced from a relative component import", () => {

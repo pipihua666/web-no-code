@@ -71,7 +71,6 @@ import { WebNoCodePreviewWidth } from "@web-no-code/vite-inspector-plugin";
 webNoCodeInspector({
   enabled: true,
   vueInspector: true,
-  mobileUserAgent: true,
   autoStart: true,
   open: true,
   width: WebNoCodePreviewWidth.Width375,
@@ -84,7 +83,6 @@ webNoCodeInspector({
 | --- | --- | --- |
 | `enabled` | `true` | Enable the plugin; `false` disables injection and editor startup |
 | `vueInspector` | `true` | Enable Vue component source lookup support |
-| `mobileUserAgent` | `true` | Emulate iPhone Safari; accepts `false` or a custom UA string |
 | `autoStart` | `true` | Start the local editor server automatically |
 | `open` | `true` | Open the editor after startup |
 | `width` | `WebNoCodePreviewWidth.Width375` | Initial target preview width: `Width375`, `Width750`, or `Full` |
