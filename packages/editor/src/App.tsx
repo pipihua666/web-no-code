@@ -20,8 +20,10 @@ import {
   Save,
   Send,
   Settings2,
+  SlidersHorizontal,
   Sparkles,
   SquareCode,
+  Trash2,
 } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -111,6 +113,12 @@ type CodexAttachment = {
   signature: string;
 };
 
+type PreviewQueryParam = {
+  id: string;
+  key: string;
+  value: string;
+};
+
 type CodexTask = {
   id: string;
   title: string;
@@ -133,6 +141,7 @@ type CodexSandbox = "workspace-write" | "danger-full-access";
 type CodexWorkspaceMode = "shadow" | "direct";
 
 let chatId = 0;
+let previewQueryParamId = 0;
 
 const CodexChatMessageView = memo(function CodexChatMessageView({
   message,
@@ -221,6 +230,12 @@ export default function App() {
   const [targetUrl, setTargetUrl] = useState(DEFAULT_TARGET);
   const [loadedUrl, setLoadedUrl] = useState(DEFAULT_TARGET);
   const [previewUrl, setPreviewUrl] = useState(DEFAULT_TARGET);
+  const [previewUrlInput, setPreviewUrlInput] = useState(DEFAULT_TARGET);
+  const [previewQueryEditor, setPreviewQueryEditor] = useState<{
+    open: boolean;
+    params: PreviewQueryParam[];
+    error: string;
+  }>({ open: false, params: [], error: "" });
   const [targetTitle, setTargetTitle] = useState("");
   const [workspaceRoot, setWorkspaceRoot] = useState(DEFAULT_ROOT);
   const [targetAliases, setTargetAliases] = useState<TargetAlias[]>([]);
@@ -496,6 +511,10 @@ export default function App() {
   }, [appTitle]);
 
   useEffect(() => {
+    setPreviewUrlInput(previewUrl);
+  }, [previewUrl]);
+
+  useEffect(() => {
     const smallScreenQuery = window.matchMedia(SMALL_SCREEN_MEDIA_QUERY);
     const handleScreenSizeChange = (event: MediaQueryListEvent) => {
       if (event.matches) setCssRulesDrawerOpen(false);
@@ -682,6 +701,11 @@ export default function App() {
         setCodexSettingsOpen(false);
         return;
       }
+      if (event.key === "Escape" && previewQueryEditor.open) {
+        event.preventDefault();
+        closePreviewQueryEditor();
+        return;
+      }
       if (isTypingTarget(event.target)) return;
       if (isInspectorShortcut(event)) {
         event.preventDefault();
@@ -720,7 +744,7 @@ export default function App() {
       window.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("blur", onBlur);
     };
-  }, [codexModelPickerOpen, codexSettingsOpen, dragEnabled, inspectorEnabled, sourceLocation, workspaceRoot]);
+  }, [codexModelPickerOpen, codexSettingsOpen, dragEnabled, inspectorEnabled, previewQueryEditor.open, sourceLocation, workspaceRoot]);
 
   useEffect(() => {
     if (!codexModelPickerOpen) return;
@@ -968,6 +992,86 @@ export default function App() {
     } catch {
       iframeRef.current?.setAttribute("src", nextUrl);
     }
+    setTimeout(postInspectorState, 300);
+  }
+
+  function navigatePreviewUrl(value = previewUrlInput) {
+    const resolvedUrl = resolvePreviewNavigationUrl(value, previewUrl);
+    if (!resolvedUrl) {
+      setPreviewUrlInput(previewUrl);
+      return;
+    }
+    const nextUrl = withEditorPassthroughParams(resolvedUrl);
+    setTargetUrl(nextUrl);
+    setPreviewUrl(nextUrl);
+    setTargetTitle("");
+    if (nextUrl === loadedUrl) {
+      iframeRef.current?.setAttribute("src", nextUrl);
+    } else {
+      setLoadedUrl(nextUrl);
+    }
+    setTimeout(postInspectorState, 300);
+  }
+
+  function openPreviewQueryEditor() {
+    try {
+      const url = new URL(resolvePreviewNavigationUrl(previewUrlInput, previewUrl), window.location.href);
+      setPreviewQueryEditor({
+        open: true,
+        params: Array.from(url.searchParams.entries(), ([key, value]) => createPreviewQueryParam(key, value)),
+        error: ""
+      });
+    } catch {
+      setPreviewQueryEditor({ open: true, params: [], error: "Enter a valid URL before editing its parameters." });
+    }
+  }
+
+  function closePreviewQueryEditor() {
+    setPreviewQueryEditor((current) => ({ ...current, open: false, error: "" }));
+  }
+
+  function updatePreviewQueryParam(id: string, field: "key" | "value", value: string) {
+    setPreviewQueryEditor((current) => ({
+      ...current,
+      error: "",
+      params: current.params.map((param) => (param.id === id ? { ...param, [field]: value } : param))
+    }));
+  }
+
+  function addPreviewQueryParam() {
+    setPreviewQueryEditor((current) => ({
+      ...current,
+      error: "",
+      params: [...current.params, createPreviewQueryParam()]
+    }));
+  }
+
+  function removePreviewQueryParam(id: string) {
+    setPreviewQueryEditor((current) => ({
+      ...current,
+      params: current.params.filter((param) => param.id !== id)
+    }));
+  }
+
+  function applyPreviewQueryParams(event: ReactFormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    try {
+      const url = new URL(resolvePreviewNavigationUrl(previewUrlInput, previewUrl), window.location.href);
+      url.search = "";
+      for (const param of previewQueryEditor.params) {
+        const key = param.key.trim();
+        if (key) url.searchParams.append(key, param.value);
+      }
+      closePreviewQueryEditor();
+      navigatePreviewUrl(url.href);
+    } catch {
+      setPreviewQueryEditor((current) => ({ ...current, error: "Unable to apply parameters to this URL." }));
+    }
+  }
+
+  function refreshPreview() {
+    const nextUrl = previewUrl || loadedUrl;
+    iframeRef.current?.setAttribute("src", nextUrl);
     setTimeout(postInspectorState, 300);
   }
 
@@ -2602,20 +2706,45 @@ export default function App() {
             <Code2 size={18} />
           </button>
         </header>
-        <div className="preview-url" aria-label="Preview URL" title={previewUrl}>
+        <div className="preview-url" aria-label="Preview URL">
           <Globe2 size={14} aria-hidden="true" />
-          <div
+          <input
             className="preview-url-scroll"
-            tabIndex={0}
-            onWheel={(event) => {
-              if (event.currentTarget.scrollWidth <= event.currentTarget.clientWidth) return;
-              event.currentTarget.scrollLeft += Math.abs(event.deltaX) > Math.abs(event.deltaY)
-                ? event.deltaX
-                : event.deltaY;
+            value={previewUrlInput}
+            aria-label="Current preview URL"
+            title={previewUrlInput}
+            spellCheck={false}
+            onChange={(event) => setPreviewUrlInput(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                navigatePreviewUrl();
+              }
+              if (event.key === "Escape") {
+                setPreviewUrlInput(previewUrl);
+                event.currentTarget.blur();
+              }
             }}
+          />
+          <button
+            className="preview-query-button"
+            type="button"
+            title="Edit query parameters"
+            aria-label="Edit query parameters"
+            aria-expanded={previewQueryEditor.open}
+            onClick={openPreviewQueryEditor}
           >
-            <code>{previewUrl}</code>
-          </div>
+            <SlidersHorizontal size={14} aria-hidden="true" />
+          </button>
+          <button
+            className="preview-refresh-button"
+            type="button"
+            title="Refresh preview"
+            aria-label="Refresh preview"
+            onClick={refreshPreview}
+          >
+            <RefreshCw size={14} aria-hidden="true" />
+          </button>
         </div>
         <div className="target-stage">
           <iframe
@@ -2761,8 +2890,78 @@ export default function App() {
           </form>
         </div>
       ) : null}
+      {previewQueryEditor.open ? (
+        <div className="modal-backdrop" role="presentation" onMouseDown={closePreviewQueryEditor}>
+          <form
+            className="preview-query-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="preview-query-dialog-title"
+            onSubmit={applyPreviewQueryParams}
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <header className="preview-query-dialog__header">
+              <div>
+                <strong id="preview-query-dialog-title">Query parameters</strong>
+                <span>{previewQueryEditor.params.length} parameters</span>
+              </div>
+              <button className="icon-button" type="button" onClick={closePreviewQueryEditor} title="Close">
+                <X size={16} />
+              </button>
+            </header>
+            <div className="preview-query-dialog__columns" aria-hidden="true">
+              <span>Key</span>
+              <span>Value</span>
+            </div>
+            <div className="preview-query-dialog__list">
+              {previewQueryEditor.params.length ? previewQueryEditor.params.map((param, index) => (
+                <div className="preview-query-row" key={param.id}>
+                  <input
+                    autoFocus={index === 0}
+                    value={param.key}
+                    onChange={(event) => updatePreviewQueryParam(param.id, "key", event.target.value)}
+                    placeholder="parameter"
+                    aria-label={`Parameter ${index + 1} key`}
+                  />
+                  <input
+                    value={param.value}
+                    onChange={(event) => updatePreviewQueryParam(param.id, "value", event.target.value)}
+                    placeholder="value"
+                    aria-label={`Parameter ${index + 1} value`}
+                  />
+                  <button
+                    type="button"
+                    title="Remove parameter"
+                    aria-label={`Remove parameter ${param.key || index + 1}`}
+                    onClick={() => removePreviewQueryParam(param.id)}
+                  >
+                    <Trash2 size={14} aria-hidden="true" />
+                  </button>
+                </div>
+              )) : (
+                <p className="preview-query-dialog__empty">No query parameters</p>
+              )}
+            </div>
+            {previewQueryEditor.error ? <p className="preview-query-dialog__error">{previewQueryEditor.error}</p> : null}
+            <footer className="preview-query-dialog__actions">
+              <button className="preview-query-add" type="button" onClick={addPreviewQueryParam}>
+                <Plus size={14} aria-hidden="true" />
+                Add parameter
+              </button>
+              <span />
+              <button type="button" onClick={closePreviewQueryEditor}>Cancel</button>
+              <button type="submit">Apply &amp; reload</button>
+            </footer>
+          </form>
+        </div>
+      ) : null}
     </div>
   );
+}
+
+function createPreviewQueryParam(key = "", value = ""): PreviewQueryParam {
+  previewQueryParamId += 1;
+  return { id: `preview-query-${previewQueryParamId}`, key, value };
 }
 
 function resolveSelectedImage(
@@ -2974,8 +3173,6 @@ function withEditorPassthroughParams(targetUrl: string, cacheBust = false) {
   if (!targetUrl || targetUrl === "about:blank") return targetUrl;
   try {
     const nextUrl = new URL(targetUrl, window.location.href);
-    const editorPath = editorPassthroughPath(window.location.pathname);
-    if (editorPath) nextUrl.pathname = editorPath;
     const editorParams = new URLSearchParams(window.location.search);
     for (const [key, value] of editorParams) {
       if (EDITOR_QUERY_KEYS.has(key)) continue;
@@ -2988,10 +3185,14 @@ function withEditorPassthroughParams(targetUrl: string, cacheBust = false) {
   }
 }
 
-function editorPassthroughPath(pathname: string) {
-  if (!pathname || pathname === "/") return "";
-  if (pathname.startsWith("/api/")) return "";
-  return pathname;
+function resolvePreviewNavigationUrl(value: string, currentUrl: string) {
+  const nextUrl = value.trim();
+  if (!nextUrl) return "";
+  try {
+    return new URL(nextUrl, currentUrl || window.location.href).href;
+  } catch {
+    return nextUrl;
+  }
 }
 
 function normalizeTargetTitle(title: unknown) {

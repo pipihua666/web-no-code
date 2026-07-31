@@ -95,7 +95,7 @@ h1 {
     url("https://images.unsplash.com/photo-1557683316-973673baf926?auto=format&fit=crop&w=900&q=80");
   background-size: cover;
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
-  background-image: linear-gradient(160deg, rgba(41, 214, 163, 0.32), rgba(13, 29, 34, 0.2)), url("https://res.cdn.changbaimg.com/mcp/assets/true-love-enter-room-effect.webp");
+  background-image: linear-gradient(160deg, rgba(41, 214, 163, 0.32), rgba(13, 29, 34, 0.2)), url("https://images.unsplash.com/photo-1555066931-4365d14bab8c?auto=format&fit=crop&w=900&q=80");
 }
 
 .card-topline {

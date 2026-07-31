@@ -1,54 +1,28 @@
 # Web No Code
 
-**直接在正在运行的 Vite 页面上选择元素、定位源码并完成修改。**
+**直接在正在运行的 Vite 页面上选择元素、找到源码并完成修改。**
 
 [English README](./README.md)
 
-## 这个插件是什么
+## 为什么需要它
 
-`@web-no-code/vite-inspector-plugin` 是一个只在 Vite 开发服务器中运行的可视化源码编辑插件。它把浏览器里的 DOM 元素与本地项目中的 Vue、React、CSS 和图片文件连接起来，让页面不只是预览结果，也成为源码编辑入口。
+页面在浏览器里看起来很直观，但想修改一个按钮、一条样式或一张图片时，经常不知道应该打开哪个文件。浏览器开发者工具展示的是运行结果，真正需要修改的代码可能在 Vue 组件、React 组件、CSS 文件或本地图片中。
 
-接入插件后，启动业务项目的 `vite dev server` 会自动：
+Web No Code 把页面和这些源码连接起来。选中元素后，你可以直接修改 CSS、让 Codex 根据元素上下文改代码、替换图片，或者快速打开相关源文件。
 
-1. 向页面注入元素检查 runtime。
-2. 启动本地 Web No Code 编辑器和 API 服务。
-3. 注册业务项目根目录、Vite 地址和路径别名。
-4. 在编辑器中打开业务页面，允许从页面选择元素。
+## 它是什么
 
-> 插件使用 `apply: "serve"`，不会注入 `vite build` 的生产产物。
+`@web-no-code/vite-inspector-plugin` 是一个用于 Vite 开发项目的可视化源码编辑插件。它只在 Vite 开发服务器中运行，不会进入生产构建。
+
+接入插件并启动业务项目后，它会自动打开一个本地编辑器，并在其中加载当前页面。
 
 ![Web No Code 可视化编辑器，包含元素选择、Codex 编辑和 CSS 规则面板](./image.png)
 
-## 为什么有这个插件
-
-浏览器擅长展示最终结果，但开发修改需要回到源码。两者之间缺少稳定的对应关系：
-
-| 要做的事           | 真正需要知道的信息                      | 常见问题                                      |
-| -------------- | ------------------------------ | ----------------------------------------- |
-| 修改页面 CSS       | 生效规则所在的源码文件、选择器和声明位置           | DevTools 看到的是编译后或 computed style，不一定是原始声明 |
-| 让 Codex 修改某个元素 | 元素对应的组件、样式文件、selector 和当前页面上下文 | 只描述“改这个按钮”时，Codex 不知道“这个”对应哪个文件           |
-| 替换图片           | 原始资源路径、路径别名、文件名和工作区中的实际位置      | 浏览器里常常只剩绝对 URL、`/@fs/` 地址或构建后的资源路径        |
-
-**Web No Code 解决的是“从页面回到源码”这一层**，而不是在浏览器中维护一份脱离项目的样式数据。
-
-```mermaid
-flowchart LR
-  Element[页面中的 DOM 元素] --> Inspector[Inspector runtime]
-  Inspector --> Context[源码文件 + selector + 样式 + 资源路径]
-  Context --> CSS[写回 CSS 声明]
-  Context --> Codex[交给 Codex 修改源码]
-  Context --> Asset[定位并覆盖图片文件]
-```
-
-插件结合 Vite 模块信息、source map、CSS rules、Vue inspector 信息、项目根目录和 alias 配置恢复源码上下文。定位成功后，**CSS 编辑、Codex 编辑和图片替换共用同一份元素上下文。**
-
-***
-
-## 怎么使用
+## 快速开始
 
 ### 1. 安装
 
-要求业务项目使用 Vite 5 或更高版本。
+业务项目需要使用 Vite 5 或更高版本。
 
 ```bash
 pnpm add -D @web-no-code/vite-inspector-plugin
@@ -62,14 +36,18 @@ import vue from "@vitejs/plugin-vue";
 import { webNoCodeInspector } from "@web-no-code/vite-inspector-plugin";
 
 export default defineConfig({
-  plugins: [
-    vue(),
-    webNoCodeInspector()
-  ]
+  plugins: [vue(), webNoCodeInspector()],
+  css: {
+    devSourcemap: true
+  }
 });
 ```
 
-> 插件本身已经限制为开发服务器模式，不需要额外判断 `command === "serve"`。
+React 项目保留已有的 React 插件，并在旁边加入 `webNoCodeInspector()` 即可。
+
+`css.devSourcemap` 可以帮助 Web No Code 准确定位 Vue 样式、SCSS、Less、PostCSS 和嵌套 CSS 的源码位置。不开启时，简单样式仍可能正常定位，但准确度会降低。这个配置只影响开发环境。
+
+插件本身只在开发环境运行，不需要额外判断 `command === "serve"`。
 
 ### 3. 启动业务项目
 
@@ -77,55 +55,58 @@ export default defineConfig({
 pnpm dev
 ```
 
-**插件默认启动 `http://127.0.0.1:4317` 并自动打开编辑器。** 编辑器中加载的是当前业务 Vite 页面，源码修改直接写入当前业务项目。
+插件默认在 `http://127.0.0.1:4317` 启动 Web No Code 并自动打开。修改会直接写入业务项目，建议使用前先通过 Git 管理代码。
 
-### 4. 从页面修改源码
+## 从页面修改源码
 
-#### 修改 CSS
+为了更快地定位源码，建议为可编辑元素使用稳定且唯一的 CSS selector，并尽量避免过深的嵌套 CSS。如果 Web No Code 无法可靠地找到原始声明，可以按 `Ctrl+S` 打开当前能识别到的最接近的源文件，再手动修改。
 
-1. 开启顶部的元素选择工具。
-2. 在预览页面点击要修改的元素。
-3. 在 CSS Rules 中修改已定位到的声明。
-4. 按 `Enter` 或让输入框失焦，将结果写回源码文件。
+### 选择元素
 
-数值属性支持 `Arrow Up` / `Arrow Down` 实时预览；按住 `Shift` 时步长为 `10`，按住 `Alt` 时步长为 `0.1`。对于 absolute 或 fixed 元素，也可以直接拖动并写回位置。
+1. 点击顶部工具栏中的元素选择按钮。
+2. 在预览页面中点击要修改的元素。
+3. 编辑器会显示它的源码和样式信息。
 
-#### 使用 Codex 修改选中元素
+### 修改 CSS
 
-1. 在页面中选中元素。
-2. 在 Codex 输入区保留选中元素上下文。
-3. 描述希望完成的修改并发送。
+在 CSS Rules 面板修改属性值，然后按 `Enter` 或让输入框失焦即可保存。
 
-请求会携带元素 selector、组件或源码文件、样式来源和页面信息，避免只凭自然语言猜测目标文件。Codex 设置支持两种工作区模式：默认的 direct 模式直接修改业务项目；shadow 模式先在临时工作区执行，再将产生的 diff 应用到真实项目。
+修改数值时，可以使用 `Arrow Up` 和 `Arrow Down`。按住 `Shift` 时步长为 `10`，按住 `Alt` 时步长为 `0.1`。对于绝对定位或固定定位元素，也可以直接拖动。
 
-> 该功能依赖本机可用的 Codex CLI。若 `codex` 不在 `PATH` 中，可以通过 `CODEX_BIN` 指定：
+### 让 Codex 修改代码
+
+选中元素，在 Codex 输入区保留它的上下文，然后描述需要完成的修改。Web No Code 会把相关 selector、组件、样式来源和页面信息一起发送给 Codex。
+
+该功能需要本机安装 Codex CLI。如果 `codex` 不在 `PATH` 中，可以设置 `CODEX_BIN`：
 
 ```bash
 CODEX_BIN=/absolute/path/to/codex pnpm --dir packages/server dev
 ```
 
-#### 替换图片
+### 替换图片
 
-1. 选中 `<img>` 或带 `background-image` 的元素。
-2. 点击右侧图片预览。
-3. 本地资源选择新图片后，插件会定位并覆盖原文件。
-4. 真正的远程 `http(s)` 图片则通过 URL 输入框修改源码链接。
+选中 `<img>` 或带有 `background-image` 的元素，然后点击右侧面板中的图片预览。
 
-`@/assets/...`、`/src/assets/...`、Vite 的 `/@fs/...` 以及指向当前开发服务器的绝对 URL 都按本地资源处理。插件会结合 alias 和工作区根目录恢复实际文件位置。
+- 本地图片：选择新的图片文件。
+- 远程 `http(s)` 图片：输入新的 URL。
+
+### 切换预览页面
+
+修改预览区域上方的 URL，然后按 `Enter`。查询参数过长时，可以点击参数按钮单独修改；点击刷新按钮可以重新加载当前页面。
 
 ## 常用操作
 
-| 操作                         | 行为                      |
-| -------------------------- | ----------------------- |
-| `Ctrl+C`                   | 开关元素选择工具；输入框聚焦时不触发      |
-| 长按 `Option` / `Alt`        | 临时开启元素选择，松开后恢复          |
-| `Ctrl+S`                   | 在 VS Code 中打开当前源码位置     |
-| `Enter`                    | 发送 Codex 输入，或提交 CSS 输入值 |
-| `Shift+Enter`              | 在 Codex 输入框中换行          |
-| `$`                        | 打开 Codex skill 选择器      |
-| `375px` / `750px` / `Full` | 切换目标页面预览宽度              |
+| 操作                         | 作用                              |
+| ---------------------------- | --------------------------------- |
+| `Ctrl+C`                     | 开启或关闭元素选择                |
+| 长按 `Option` / `Alt`        | 临时选择元素                      |
+| `Ctrl+S`                     | 在 VS Code 中打开最接近的源文件   |
+| `Enter`                      | 发送 Codex 输入或保存 CSS 属性值  |
+| `Shift+Enter`                | 在 Codex 输入框中换行             |
+| `$`                          | 打开 Codex skill 选择器           |
+| `375px` / `750px` / `Full`   | 修改预览宽度                      |
 
-## 配置项
+## 插件配置
 
 ```js
 import { WebNoCodePreviewWidth, webNoCodeInspector } from "@web-no-code/vite-inspector-plugin";
@@ -133,7 +114,6 @@ import { WebNoCodePreviewWidth, webNoCodeInspector } from "@web-no-code/vite-ins
 webNoCodeInspector({
   enabled: true,
   vueInspector: true,
-  autoStart: true,
   open: true,
   width: WebNoCodePreviewWidth.Width375,
   serverPort: 4317,
@@ -141,63 +121,38 @@ webNoCodeInspector({
 });
 ```
 
-| 参数                | 默认值                              | 说明                                       |
-| ----------------- | -------------------------------- | ---------------------------------------- |
-| `enabled`         | `true`                           | 是否启用插件；`false` 时不注入页面且不启动编辑器          |
-| `vueInspector`    | `true`                           | 是否启用 Vue 组件源码定位支持                        |
-| `autoStart`       | `true`                           | 是否自动启动 Web No Code 服务                    |
-| `open`            | `true`                           | 服务启动后是否自动打开编辑器                           |
-| `width`           | `WebNoCodePreviewWidth.Width375` | 初始预览宽度，可选 `Width375`、`Width750` 或 `Full` |
-| `serverPort`      | `4317`                           | 本地编辑器服务首选端口                              |
-| `serverUrl`       | -                                | 连接已经运行的 Web No Code 服务                   |
-| `workspaceRoot`   | `process.cwd()`                  | 允许读取和修改的业务项目根目录                          |
-| `cli`             | 内置 CLI                           | 自定义服务启动命令，适合高级集成                         |
+| 参数            | 默认值                           | 说明                          |
+| --------------- | -------------------------------- | ----------------------------- |
+| `enabled`       | `true`                           | 开启或关闭插件                |
+| `vueInspector`  | `true`                           | 定位 Vue 组件源码             |
+| `open`          | `true`                           | 自动打开编辑器                |
+| `width`         | `WebNoCodePreviewWidth.Width375` | 初始预览宽度                  |
+| `serverPort`    | `4317`                           | 本地编辑器首选端口            |
+| `workspaceRoot` | `process.cwd()`                  | 允许修改的业务项目目录        |
 
-***
+## 使用前须知
 
-## 在本仓库开发
+- Web No Code 只用于本地开发环境。
+- 它会直接修改真实项目文件，请使用 Git 管理项目。
+- 动态生成的样式、跨域样式表或缺少 source map 时，可能无法准确定位源码。
+- Codex 和 VS Code 功能需要本机安装对应工具。
+
+## 开发本仓库
 
 ```bash
 pnpm install
 pnpm dev
 ```
 
-`pnpm dev` 会同时监听 server、editor、plugin 和插件静态资源。另开一个终端启动内置 Vue 示例：
+在另一个终端启动 Vue 示例：
 
 ```bash
 pnpm dev:vue
 ```
 
-示例页面默认运行在 `http://127.0.0.1:5174`，Web No Code 编辑器默认运行在 `http://127.0.0.1:4317`。
-
-仓库结构：
-
-* `packages/vite-inspector-plugin`：Vite 插件、页面 runtime 和 CLI。
-* `packages/editor`：React 可视化编辑器。
-* `packages/server`：源码补丁、资源替换和 Codex bridge。
-* `examples/vue-target`：用于本地验证的 Vue 示例项目。
-
-## 构建与发布
+示例页面默认运行在 `http://127.0.0.1:5174`，Web No Code 默认运行在 `http://127.0.0.1:4317`。
 
 ```bash
-# 类型检查和完整构建
 pnpm typecheck
 pnpm build
-
-# 发布当前 package.json 中的版本
-pnpm release
-
-# 升级版本后发布
-pnpm release:patch
-pnpm release:minor
-pnpm release:major
 ```
-
-release 脚本会检查工作区、npm 登录状态和版本是否已存在，然后执行类型检查、构建、npm publish，并创建 release commit 和本地 tag。**推送 commit 和 tag 仍由发布者显式执行。**
-
-## 使用边界
-
-* 所有源码操作仅用于本地开发环境。
-* 修改会写入真实工作区，使用前应由 Git 管理项目文件。
-* 动态生成、跨域样式表或缺少 source map 的规则可能只能显示运行时值，无法保证定位到原始声明。
-* Codex、VS Code 打开源码等能力依赖对应的本地工具可用。

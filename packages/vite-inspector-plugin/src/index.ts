@@ -22,13 +22,10 @@ export enum WebNoCodePreviewWidth {
 export type WebNoCodeInspectorOptions = {
   enabled?: boolean;
   vueInspector?: boolean;
-  autoStart?: boolean;
   open?: boolean;
   width?: WebNoCodePreviewWidth;
   serverPort?: number;
-  serverUrl?: string;
   workspaceRoot?: string;
-  cli?: string | WebNoCodeCliCommand;
 };
 
 type WebNoCodeCliCommand = {
@@ -70,13 +67,11 @@ export function webNoCodeInspector(options: WebNoCodeInspectorOptions = {}): Plu
   if (options.enabled === false) return [];
 
   const vueInspectorEnabled = options.vueInspector ?? true;
-  const autoStart = options.autoStart ?? true;
   const shouldOpen = options.open ?? true;
   const width = normalizePreviewWidth(options.width);
   const serverPort = options.serverPort || 4317;
-  const configuredServerUrl = (options.serverUrl || `http://127.0.0.1:${serverPort}`).replace(/\/$/, "");
-  const canSwitchPort = !options.serverUrl;
-  const cli = normalizeCli(options.cli);
+  const configuredServerUrl = `http://127.0.0.1:${serverPort}`;
+  const cli = resolveDefaultCli();
   let root = resolveWorkspaceRoot(options.workspaceRoot);
   let aliases: TargetAlias[] = [];
   let webNoCodeProcess: ChildProcess | null = null;
@@ -169,24 +164,17 @@ export function webNoCodeInspector(options: WebNoCodeInspectorOptions = {}): Plu
           width,
           aliases
         };
-        let activeServerUrl = configuredServerUrl;
-
-        if (autoStart) {
-          const result = await ensureWebNoCodeServer({
-            cli,
-            serverUrl: configuredServerUrl,
-            serverPort,
-            canSwitchPort,
-            target,
-            width,
-            shouldOpen,
-            logger: server
-          });
-          webNoCodeProcess = result.process;
-          activeServerUrl = result.serverUrl;
-        }
-
-        registerTarget(activeServerUrl, target);
+        const result = await ensureWebNoCodeServer({
+          cli,
+          serverUrl: configuredServerUrl,
+          serverPort,
+          target,
+          width,
+          shouldOpen,
+          logger: server
+        });
+        webNoCodeProcess = result.process;
+        registerTarget(result.serverUrl, target);
       });
 
       server.httpServer?.once("close", cleanup);
@@ -625,7 +613,6 @@ async function ensureWebNoCodeServer(options: {
   cli: Required<WebNoCodeCliCommand>;
   serverUrl: string;
   serverPort: number;
-  canSwitchPort: boolean;
   target: TargetPayload;
   width?: WebNoCodePreviewWidth;
   shouldOpen: boolean;
@@ -637,20 +624,12 @@ async function ensureWebNoCodeServer(options: {
   }
 
   if (await isApiReady(options.serverUrl)) {
-    if (!options.canSwitchPort) {
-      options.logger.config.logger.warn(
-        `[web-no-code] ${options.serverUrl} is already running, but the editor UI is not available. Stop the stale process on port ${options.serverPort} and restart the Vite dev server.`
-      );
-      return { process: null, serverUrl: options.serverUrl };
-    }
     options.logger.config.logger.warn(
       `[web-no-code] ${options.serverUrl} is occupied by an incomplete web-no-code server; trying another port.`
     );
   }
 
-  const endpoint = options.canSwitchPort
-    ? await resolveAvailableEndpoint(options.serverUrl, options.serverPort, options.logger)
-    : { serverUrl: options.serverUrl, port: options.serverPort };
+  const endpoint = await resolveAvailableEndpoint(options.serverUrl, options.serverPort, options.logger);
 
   const child = spawn(options.cli.command, [...options.cli.args, "serve"], {
     env: {
@@ -718,22 +697,6 @@ function isPortAvailable(host: string, port: number) {
 function terminateProcess(child: ChildProcess) {
   if (child.killed) return;
   child.kill("SIGTERM");
-}
-
-function normalizeCli(cli: WebNoCodeInspectorOptions["cli"]): Required<WebNoCodeCliCommand> {
-  if (typeof cli === "string") {
-    return {
-      command: process.execPath,
-      args: [cli]
-    };
-  }
-  if (cli) {
-    return {
-      command: cli.command,
-      args: cli.args || []
-    };
-  }
-  return resolveDefaultCli();
 }
 
 function resolveDefaultCli(): Required<WebNoCodeCliCommand> {

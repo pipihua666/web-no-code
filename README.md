@@ -1,54 +1,28 @@
 # Web No Code
 
-**Select an element in a running Vite page, locate its source, and edit the project directly.**
+**Click an element on a running Vite page, find its source, and edit it directly.**
 
 [中文文档](./README.zh-CN.md)
 
-## What This Plugin Is
+## Why Use It
 
-`@web-no-code/vite-inspector-plugin` is a development-only visual source editor for Vite. It connects DOM elements in the browser to the Vue, React, CSS, and image files in the local workspace, turning the running page into an entry point for source edits.
+A page may look simple in the browser, but finding the file that controls one button, style, or image can take time. Browser DevTools shows the rendered result, while the code you need may be in a Vue component, React component, CSS file, or local asset.
 
-When the target Vite dev server starts, the plugin automatically:
+Web No Code connects the page back to those source files. Select an element once, then edit its CSS, send its context to Codex, replace its image, or open the related source file.
 
-1. Injects an element inspector runtime into the page.
-2. Starts the local Web No Code editor and API server.
-3. Registers the workspace root, Vite URL, and path aliases.
-4. Opens the target page inside the editor for element selection.
+## What It Is
 
-> The plugin uses `apply: "serve"` and is never injected into a production `vite build`.
+`@web-no-code/vite-inspector-plugin` is a visual source editor for Vite development projects. It runs only with the Vite dev server and does not enter the production build.
+
+After you add the plugin and start your project, it automatically opens a local editor containing your page.
 
 ![Web No Code visual editor with element selection, Codex editing, and CSS rules](./image.png)
 
-## Why It Exists
-
-The browser knows the rendered result, while development work must change source files. The missing piece is a reliable mapping between the two:
-
-| Task                           | Required source context                                              | Common problem                                                                      |
-| ------------------------------ | -------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
-| Change page CSS                | Source file, selector, and declaration that produced the active rule | DevTools may only expose compiled rules or computed values                          |
-| Ask Codex to change an element | Component, style source, selector, and page context                  | “Change this button” does not identify a file to Codex                              |
-| Replace an image               | Original asset path, alias, filename, and real workspace location    | The browser may only expose an absolute URL, `/@fs/` URL, or transformed asset path |
-
-**Web No Code provides this page-to-source mapping.** It does not maintain a separate browser-only design document.
-
-```mermaid
-flowchart LR
-  Element[DOM element] --> Inspector[Inspector runtime]
-  Inspector --> Context[Source file + selector + styles + asset path]
-  Context --> CSS[Write CSS declaration]
-  Context --> Codex[Give context to Codex]
-  Context --> Asset[Locate and replace image]
-```
-
-The plugin combines Vite module data, source maps, CSS rules, Vue inspector metadata, the workspace root, and alias configuration to recover source context. **CSS editing, Codex editing, and asset replacement then share that context.**
-
-***
-
-## How To Use It
+## Quick Start
 
 ### 1. Install
 
-The target project must use Vite 5 or newer.
+Your project must use Vite 5 or newer.
 
 ```bash
 pnpm add -D @web-no-code/vite-inspector-plugin
@@ -62,70 +36,77 @@ import vue from "@vitejs/plugin-vue";
 import { webNoCodeInspector } from "@web-no-code/vite-inspector-plugin";
 
 export default defineConfig({
-  plugins: [
-    vue(),
-    webNoCodeInspector()
-  ]
+  plugins: [vue(), webNoCodeInspector()],
+  css: {
+    devSourcemap: true
+  }
 });
 ```
 
-> No additional `command === "serve"` condition is needed because the plugin already limits itself to the dev server.
+For React projects, keep your existing React plugin and add `webNoCodeInspector()` next to it.
 
-### 3. Start The Target Project
+`css.devSourcemap` helps Web No Code find the correct source location for Vue styles, SCSS, Less, PostCSS, and nested CSS. Without it, simple styles may still work, but source lookup can be less accurate. It only affects development.
+
+The plugin already runs only in development, so you do not need an extra `command === "serve"` check.
+
+### 3. Start Your Project
 
 ```bash
 pnpm dev
 ```
 
-**By default, the plugin starts Web No Code at `http://127.0.0.1:4317` and opens it automatically.** The editor loads the current Vite page, and source changes are written directly to the target workspace.
+The plugin starts Web No Code at `http://127.0.0.1:4317` by default and opens it automatically. Changes are written directly to your project, so use Git before editing.
 
-### 4. Edit From The Page
+## Edit From The Page
 
-#### Change CSS
+For faster source lookup, give editable elements stable, unique CSS selectors and avoid deeply nested CSS. If Web No Code cannot find the original declaration reliably, press `Ctrl+S` to open the nearest source file and edit it manually.
 
-1. Enable the element selection tool.
-2. Click an element in the target preview.
-3. Edit a located declaration in CSS Rules.
-4. Press `Enter` or blur the input to write it back to the source file.
+### Select An Element
 
-Numeric values support live preview with `Arrow Up` / `Arrow Down`. Hold `Shift` for a step of `10` or `Alt` for a step of `0.1`. Absolute and fixed elements can also be dragged to update their source position.
+1. Click the element selection button in the top toolbar.
+2. Click an element in the preview.
+3. Its source and styles appear in the editor.
 
-#### Ask Codex To Change The Selected Element
+### Change CSS
 
-1. Select the element in the page.
-2. Keep its context attached in the Codex input area.
-3. Describe the requested change and send it.
+Edit a value in the CSS Rules panel, then press `Enter` or leave the input to save it.
 
-The request includes the selector, component or source file, style sources, and page information, avoiding target-file guesses from natural language alone. Codex settings provide two workspace modes: the default direct mode edits the target project in place, while shadow mode runs in a temporary workspace and applies the resulting diff back to the real project.
+For numeric values, use `Arrow Up` and `Arrow Down`. Hold `Shift` to change by `10`, or `Alt` to change by `0.1`. You can also drag absolutely or fixed-positioned elements.
 
-> This workflow requires a local Codex CLI. If `codex` is not on `PATH`, set `CODEX_BIN` explicitly:
+### Ask Codex To Make A Change
+
+Select an element, keep its context attached in the Codex input, and describe the change. Web No Code sends the related selector, component, style source, and page information with your request.
+
+This feature requires a local Codex CLI. If `codex` is not on `PATH`, set `CODEX_BIN`:
 
 ```bash
 CODEX_BIN=/absolute/path/to/codex pnpm --dir packages/server dev
 ```
 
-#### Replace An Image
+### Replace An Image
 
-1. Select an `<img>` or an element with `background-image`.
-2. Click the image preview in the right rail.
-3. For a local asset, choose a replacement file; Web No Code locates and overwrites the original file.
-4. For a genuinely remote `http(s)` image, edit the URL stored in source.
+Select an `<img>` or an element with `background-image`, then click its image preview in the right panel.
 
-Paths such as `@/assets/...`, `/src/assets/...`, Vite `/@fs/...` URLs, and absolute URLs served by the current dev server are treated as local assets. Alias configuration and the workspace root are used to recover the real file location.
+- For a local image, choose a replacement file.
+- For a remote `http(s)` image, enter a new URL.
+
+### Change The Preview Page
+
+Edit the URL above the preview and press `Enter`. Use the parameter button to edit long query parameters separately, or use the refresh button to reload the current page.
 
 ## Common Controls
 
-| Control                    | Action                                        |
-| -------------------------- | --------------------------------------------- |
-| `Ctrl+C`                   | Toggle element selection, except while typing |
-| Hold `Option` / `Alt`      | Temporarily enable element selection          |
-| `Ctrl+S`                   | Open the current source location in VS Code   |
-| `Enter`                    | Send a Codex prompt or commit a CSS value     |
-| `Shift+Enter`              | Insert a newline in the Codex prompt          |
-| `$`                        | Open the Codex skill picker                   |
-| `375px` / `750px` / `Full` | Change the target preview width               |
+| Control                    | Action                                      |
+| -------------------------- | ------------------------------------------- |
+| `Ctrl+C`                   | Turn element selection on or off            |
+| Hold `Option` / `Alt`      | Temporarily select elements                 |
+| `Ctrl+S`                   | Open the nearest source in VS Code          |
+| `Enter`                    | Send a Codex prompt or save a CSS value     |
+| `Shift+Enter`              | Add a new line to a Codex prompt            |
+| `$`                        | Open the Codex skill picker                 |
+| `375px` / `750px` / `Full` | Change the preview width                    |
 
-## Options
+## Plugin Options
 
 ```js
 import { WebNoCodePreviewWidth, webNoCodeInspector } from "@web-no-code/vite-inspector-plugin";
@@ -133,7 +114,6 @@ import { WebNoCodePreviewWidth, webNoCodeInspector } from "@web-no-code/vite-ins
 webNoCodeInspector({
   enabled: true,
   vueInspector: true,
-  autoStart: true,
   open: true,
   width: WebNoCodePreviewWidth.Width375,
   serverPort: 4317,
@@ -141,19 +121,21 @@ webNoCodeInspector({
 });
 ```
 
-| Option            | Default                          | Purpose                                                         |
-| ----------------- | -------------------------------- | --------------------------------------------------------------- |
-| `enabled`         | `true`                           | Enable the plugin; `false` disables injection and editor startup |
-| `vueInspector`    | `true`                           | Enable Vue component source lookup support                      |
-| `autoStart`       | `true`                           | Start the Web No Code server automatically                      |
-| `open`            | `true`                           | Open the editor after the server starts                         |
-| `width`           | `WebNoCodePreviewWidth.Width375` | Initial target preview width: `Width375`, `Width750`, or `Full` |
-| `serverPort`      | `4317`                           | Preferred local editor port                                     |
-| `serverUrl`       | -                                | Connect to an existing Web No Code server                       |
-| `workspaceRoot`   | `process.cwd()`                  | Root directory that source operations may access                |
-| `cli`             | bundled CLI                      | Override the server command for advanced integrations           |
+| Option          | Default                          | Description                              |
+| --------------- | -------------------------------- | ---------------------------------------- |
+| `enabled`       | `true`                           | Enable or disable the plugin             |
+| `vueInspector`  | `true`                           | Locate Vue component source              |
+| `open`          | `true`                           | Open the editor automatically            |
+| `width`         | `WebNoCodePreviewWidth.Width375` | Initial preview width                    |
+| `serverPort`    | `4317`                           | Preferred local editor port              |
+| `workspaceRoot` | `process.cwd()`                  | Project directory that may be edited     |
 
-***
+## Before You Use It
+
+- Web No Code is intended for local development only.
+- It edits real project files. Keep the project under version control.
+- Generated styles, cross-origin stylesheets, and missing source maps may prevent exact source lookup.
+- Codex and VS Code features require those tools to be installed locally.
 
 ## Develop This Repository
 
@@ -162,42 +144,15 @@ pnpm install
 pnpm dev
 ```
 
-`pnpm dev` watches the server, editor, plugin, and packaged editor assets. Start the bundled Vue target in another terminal:
+Start the Vue demo in another terminal:
 
 ```bash
 pnpm dev:vue
 ```
 
-The demo target runs at `http://127.0.0.1:5174`; the editor defaults to `http://127.0.0.1:4317`.
-
-Repository layout:
-
-* `packages/vite-inspector-plugin`: Vite plugin, page runtime, and CLI.
-* `packages/editor`: React visual editor.
-* `packages/server`: source patches, asset replacement, and Codex bridge.
-* `examples/vue-target`: local Vue target used for verification.
-
-## Build And Release
+The demo runs at `http://127.0.0.1:5174`, and Web No Code runs at `http://127.0.0.1:4317` by default.
 
 ```bash
-# Typecheck and build all publishable output.
 pnpm typecheck
 pnpm build
-
-# Publish the version already present in package.json.
-pnpm release
-
-# Bump and publish a new version.
-pnpm release:patch
-pnpm release:minor
-pnpm release:major
 ```
-
-The release script checks the worktree, npm authentication, and version availability before typechecking, building, publishing to npm, and creating a release commit plus a local tag. **Pushing the commit and tag remains an explicit maintainer action.**
-
-## Boundaries
-
-* Source operations are intended for local development only.
-* Changes are written to the real workspace, so the project should be under version control.
-* Dynamically generated rules, cross-origin stylesheets, or missing source maps may expose only runtime values and cannot always be mapped to the original declaration.
-* Codex and VS Code integration require the corresponding local tools.

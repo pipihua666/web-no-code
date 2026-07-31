@@ -71,7 +71,6 @@ import { WebNoCodePreviewWidth } from "@web-no-code/vite-inspector-plugin";
 webNoCodeInspector({
   enabled: true,
   vueInspector: true,
-  autoStart: true,
   open: true,
   width: WebNoCodePreviewWidth.Width375,
   serverPort: 4317,
@@ -83,13 +82,10 @@ webNoCodeInspector({
 | --- | --- | --- |
 | `enabled` | `true` | Enable the plugin; `false` disables injection and editor startup |
 | `vueInspector` | `true` | Enable Vue component source lookup support |
-| `autoStart` | `true` | Start the local editor server automatically |
 | `open` | `true` | Open the editor after startup |
 | `width` | `WebNoCodePreviewWidth.Width375` | Initial target preview width: `Width375`, `Width750`, or `Full` |
 | `serverPort` | `4317` | Preferred editor server port |
-| `serverUrl` | - | Connect to an existing Web No Code server |
 | `workspaceRoot` | `process.cwd()` | Root directory available to source operations |
-| `cli` | bundled CLI | Override the server command for advanced integrations |
 
 ## Safety And Scope
 
