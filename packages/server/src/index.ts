@@ -152,6 +152,18 @@ app.put("/api/workspace/agents", async (request, response) => {
   }
 });
 
+app.put("/api/global/agents", async (request, response) => {
+  try {
+    const content = typeof request.body.content === "string" ? request.body.content : "";
+    const path = join(homedir(), ".codex", "AGENTS.md");
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, content, "utf8");
+    response.json({ path, content, exists: true });
+  } catch (error) {
+    response.status(400).json(errorPayload(error));
+  }
+});
+
 app.post("/api/codex/thread", async (request, response) => {
   try {
     response.json(

@@ -74,6 +74,13 @@ export async function updateWorkspaceAgents(root: string, content: string, keepa
   }) as Promise<{ root: string; path: string; content: string; exists: boolean }>;
 }
 
+export async function updateGlobalAgents(content: string) {
+  return request("/api/global/agents", {
+    method: "PUT",
+    body: JSON.stringify({ content })
+  }) as Promise<{ path: string; content: string; exists: boolean }>;
+}
+
 export async function startCodexThread(payload: {
   cwd: string;
   mode: ProviderMode;

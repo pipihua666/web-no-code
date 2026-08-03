@@ -2,6 +2,7 @@ import {
   Bot,
   Check,
   ChevronDown,
+  ChevronRight,
   Code2,
   Crosshair,
   X,
@@ -53,6 +54,7 @@ import {
   runCodexTurn,
   steerCodexTurn,
   startCodexThread,
+  updateGlobalAgents,
   updateWorkspaceAgents,
   replaceAsset,
   uploadCodexAttachment,
@@ -76,7 +78,6 @@ const MAX_CODEX_TASKS = 3;
 const CODEX_SEND_DEBOUNCE_MS = 400;
 const CODEX_RECOVERY_POLL_INTERVAL_MS = 10_000;
 const CODEX_SESSION_WRITE_DEBOUNCE_MS = 750;
-const AGENTS_WRITE_DEBOUNCE_MS = 300;
 const DEVICE_PRESETS = [
   { label: "375px", value: 375 },
   { label: "750px", value: 750 },
@@ -119,6 +120,22 @@ type PreviewQueryParam = {
   value: string;
 };
 
+type SiblingOption = {
+  selector: string;
+  label: string;
+  text?: string;
+};
+
+type SiblingPickerState = {
+  requestId: number;
+  currentSelector: string;
+  parentLabel: string;
+  left: number;
+  top: number;
+  loading: boolean;
+  options: SiblingOption[];
+};
+
 type CodexTask = {
   id: string;
   title: string;
@@ -127,6 +144,7 @@ type CodexTask = {
   attachments: CodexAttachment[];
   chatMessages: ChatMessage[];
   busy: boolean;
+  turnStartedAt?: number;
   createdAt: number;
   updatedAt: number;
 };
@@ -204,6 +222,8 @@ export default function App() {
   const skillMenuRef = useRef<HTMLDivElement | null>(null);
   const codexModelPickerRef = useRef<HTMLDivElement | null>(null);
   const selectorBreadcrumbRef = useRef<HTMLDivElement | null>(null);
+  const siblingPickerRef = useRef<HTMLDivElement | null>(null);
+  const siblingPickerRequestIdRef = useRef(0);
   const styleInputRefs = useRef<Map<string, HTMLInputElement>>(new Map());
   const styleFocusValueRef = useRef<{ property: string; value: string } | null>(null);
   const skipStyleBlurCommitRef = useRef<{ property: string; value: string } | null>(null);
@@ -211,7 +231,6 @@ export default function App() {
   const codexAttachmentsRef = useRef<CodexAttachment[]>([]);
   const codexTurnBusyRef = useRef<Record<string, boolean>>({});
   const codexLastSubmitAtRef = useRef<Record<string, number>>({});
-  const codexTurnStartedAtRef = useRef<Record<string, number>>({});
   const codexTasksRef = useRef<CodexTask[]>(persistedCodexSession.tasks);
   const activeCodexTaskIdRef = useRef(persistedCodexSession.activeTaskId);
   const codexThreadTaskIdsRef = useRef<Record<string, string>>({});
@@ -222,8 +241,8 @@ export default function App() {
   const workspaceRootRef = useRef(DEFAULT_ROOT);
   const agentsInstructionsRef = useRef("");
   const draftAgentsInstructionsRef = useRef("");
-  const agentsWriteTimerRef = useRef(0);
-  const pendingAgentsWriteRef = useRef<{ root: string; content: string } | null>(null);
+  const globalAgentsInstructionsRef = useRef("");
+  const draftGlobalAgentsInstructionsRef = useRef("");
   const openSourceRef = useRef<() => void>(() => {});
   const pendingAttachmentSignaturesRef = useRef<Set<string>>(new Set());
   const lastPasteHandledAtRef = useRef(0);
@@ -247,6 +266,7 @@ export default function App() {
   const [temporaryInspectorMode, setTemporaryInspectorMode] = useState<"select" | "drag" | null>(null);
   const [dragEnabled, setDragEnabled] = useState(false);
   const [selected, setSelected] = useState<SelectedElementContext | null>(null);
+  const [siblingPicker, setSiblingPicker] = useState<SiblingPickerState | null>(null);
   const [codexElementEnabled, setCodexElementEnabled] = useState(false);
   const [codexElementVisible, setCodexElementVisible] = useState(false);
   const [styleFile, setStyleFile] = useState("");
@@ -260,6 +280,7 @@ export default function App() {
   const [draftAgentsInstructions, setDraftAgentsInstructions] = useState("");
   const [agentsInstructionsStatus, setAgentsInstructionsStatus] = useState("Not loaded");
   const [globalAgentsInstructions, setGlobalAgentsInstructions] = useState("");
+  const [draftGlobalAgentsInstructions, setDraftGlobalAgentsInstructions] = useState("");
   const [globalAgentsInstructionsStatus, setGlobalAgentsInstructionsStatus] = useState("Not loaded");
   const [codexSandbox, setCodexSandbox] = useState<CodexSandbox>(readCodexSandboxStorage);
   const [codexWorkspaceMode, setCodexWorkspaceMode] = useState<CodexWorkspaceMode>(readCodexWorkspaceModeStorage);
@@ -271,6 +292,7 @@ export default function App() {
   const [codexModelsLoading, setCodexModelsLoading] = useState(false);
   const [codexModelPickerOpen, setCodexModelPickerOpen] = useState(false);
   const [codexSettingsOpen, setCodexSettingsOpen] = useState(false);
+  const [codexSettingsSaving, setCodexSettingsSaving] = useState(false);
   const [agentsViewerMode, setAgentsViewerMode] = useState<"global" | "project" | null>(null);
   const [cssRulesDrawerOpen, setCssRulesDrawerOpen] = useState(
     () => !window.matchMedia(SMALL_SCREEN_MEDIA_QUERY).matches
@@ -299,7 +321,7 @@ export default function App() {
   const chatMessages = activeCodexTask?.chatMessages || [];
   const busy = Boolean(activeCodexTask?.busy);
   const codexActivityElapsedMs = busy && activeCodexTask
-    ? Math.max(0, codexActivityNow - (codexTurnStartedAtRef.current[activeCodexTask.id] || codexActivityNow))
+    ? Math.max(0, codexActivityNow - (activeCodexTask.turnStartedAt || codexActivityNow))
     : 0;
   const canCreateCodexTask = codexTasks.length < MAX_CODEX_TASKS;
   const pendingDeleteCodexTask = pendingDeleteCodexTaskId
@@ -307,9 +329,11 @@ export default function App() {
     : null;
   const codexSettingsDirty =
     draftCodexSandbox !== codexSandbox ||
-    draftCodexWorkspaceMode !== codexWorkspaceMode;
+    draftCodexWorkspaceMode !== codexWorkspaceMode ||
+    draftAgentsInstructions !== agentsInstructions ||
+    draftGlobalAgentsInstructions !== globalAgentsInstructions;
   const projectAgentsStats = useMemo(() => getDocumentStats(draftAgentsInstructions), [draftAgentsInstructions]);
-  const globalAgentsStats = useMemo(() => getDocumentStats(globalAgentsInstructions), [globalAgentsInstructions]);
+  const globalAgentsStats = useMemo(() => getDocumentStats(draftGlobalAgentsInstructions), [draftGlobalAgentsInstructions]);
 
   const selectedStyles = useMemo(() => selected?.styles || {}, [selected]);
   const styleEntries = useMemo(
@@ -372,14 +396,12 @@ export default function App() {
       (event) => handleWorkspaceEvent(event)
     );
     const handlePageHide = () => {
-      flushPendingAgentsWrite(true);
       flushPendingCodexSessionWrite();
     };
     window.addEventListener("pagehide", handlePageHide);
     return () => {
       window.removeEventListener("pagehide", handlePageHide);
       closeEventStream();
-      flushPendingAgentsWrite(true);
       flushPendingCodexSessionWrite();
       window.cancelAnimationFrame(codexDeltaFlushFrameRef.current);
       codexDeltaFlushFrameRef.current = 0;
@@ -396,13 +418,15 @@ export default function App() {
   }, [codexReasoningEffort]);
 
   useEffect(() => {
-    flushPendingAgentsWrite();
     workspaceRootRef.current = workspaceRoot;
     agentsInstructionsRef.current = "";
     draftAgentsInstructionsRef.current = "";
+    globalAgentsInstructionsRef.current = "";
+    draftGlobalAgentsInstructionsRef.current = "";
     setAgentsInstructions("");
     setDraftAgentsInstructions("");
     setGlobalAgentsInstructions("");
+    setDraftGlobalAgentsInstructions("");
     setAgentsInstructionsStatus(workspaceRoot ? "Loading AGENTS.md..." : "No project workspace available");
     setGlobalAgentsInstructionsStatus(workspaceRoot ? "Loading global rules..." : "Not loaded");
     if (workspaceRoot) void refreshAgentsInstructions(workspaceRoot);
@@ -427,7 +451,6 @@ export default function App() {
     setActiveCodexTaskId(nextSession.activeTaskId);
     codexTurnBusyRef.current = {};
     codexLastSubmitAtRef.current = {};
-    codexTurnStartedAtRef.current = {};
     window.cancelAnimationFrame(codexDeltaFlushFrameRef.current);
     codexDeltaFlushFrameRef.current = 0;
     codexDeltaBuffersRef.current = {};
@@ -466,6 +489,7 @@ export default function App() {
               if (!task || codexLastSubmitAtRef.current[task.id]) return;
               if (status.active) {
                 codexTurnBusyRef.current[task.id] = true;
+                setBusy(true, task.id, status.startedAt);
                 return;
               }
               codexTurnBusyRef.current[task.id] = false;
@@ -557,6 +581,18 @@ export default function App() {
           setStyleFile(resolveRuleStyleFile(message.payload, styleProperty));
         }
       }
+      if (message.type === "sibling-options") {
+        const requestId = Number(message.payload?.requestId);
+        setSiblingPicker((current) => {
+          if (!current || current.requestId !== requestId) return current;
+          return {
+            ...current,
+            currentSelector: String(message.payload?.currentSelector || current.currentSelector),
+            loading: false,
+            options: normalizeSiblingOptions(message.payload?.options)
+          };
+        });
+      }
       if (message.type === "clipboard-images") {
         void handleInspectorClipboardImages(message.payload?.images || []);
       }
@@ -604,13 +640,11 @@ export default function App() {
 
   useEffect(() => {
     if (!busy || !activeCodexTask?.id) return;
-    if (!codexTurnStartedAtRef.current[activeCodexTask.id]) {
-      codexTurnStartedAtRef.current[activeCodexTask.id] = Date.now();
-    }
+    if (!activeCodexTask.turnStartedAt) setBusy(true, activeCodexTask.id);
     setCodexActivityNow(Date.now());
     const timer = window.setInterval(() => setCodexActivityNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
-  }, [busy, activeCodexTask?.id]);
+  }, [busy, activeCodexTask?.id, activeCodexTask?.turnStartedAt]);
 
   useEffect(() => {
     const taskId = pendingCodexTaskScrollRef.current;
@@ -673,11 +707,13 @@ export default function App() {
     }));
   }
 
-  function setBusy(value: boolean, taskId = activeCodexTask?.id) {
+  function setBusy(value: boolean, taskId = activeCodexTask?.id, startedAt?: number) {
     if (!taskId) return;
-    if (value) codexTurnStartedAtRef.current[taskId] ||= Date.now();
-    else delete codexTurnStartedAtRef.current[taskId];
-    updateCodexTask(taskId, (task) => ({ ...task, busy: value }));
+    updateCodexTask(taskId, (task) => ({
+      ...task,
+      busy: value,
+      turnStartedAt: value ? startedAt || task.turnStartedAt || Date.now() : undefined
+    }));
   }
 
   useEffect(() => {
@@ -690,6 +726,25 @@ export default function App() {
   }, [selected?.selector]);
 
   useEffect(() => {
+    if (!siblingPicker) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!siblingPickerRef.current?.contains(event.target as Node)) setSiblingPicker(null);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      setSiblingPicker(null);
+    };
+    window.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown, true);
+    };
+  }, [siblingPicker]);
+
+  useEffect(() => {
+    let blurTimer = 0;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape" && codexModelPickerOpen) {
         event.preventDefault();
@@ -734,7 +789,10 @@ export default function App() {
       }
     };
     const onBlur = () => {
-      setTemporaryInspectorMode(null);
+      window.clearTimeout(blurTimer);
+      blurTimer = window.setTimeout(() => {
+        if (!document.hasFocus()) setTemporaryInspectorMode(null);
+      }, 0);
     };
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
@@ -743,6 +801,7 @@ export default function App() {
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("blur", onBlur);
+      window.clearTimeout(blurTimer);
     };
   }, [codexModelPickerOpen, codexSettingsOpen, dragEnabled, inspectorEnabled, previewQueryEditor.open, sourceLocation, workspaceRoot]);
 
@@ -897,7 +956,7 @@ export default function App() {
     if (!hasLocalChanges || draftAgentsInstructionsRef.current === event.content) {
       draftAgentsInstructionsRef.current = event.content;
       setDraftAgentsInstructions(event.content);
-      setAgentsInstructionsStatus(event.exists ? "Saved to AGENTS.md" : "AGENTS.md not created");
+      setAgentsInstructionsStatus(event.exists ? "Up to date" : "File not created");
     }
   }
 
@@ -906,8 +965,9 @@ export default function App() {
       {
         source: "web-no-code-editor",
         type: "inspector:set-enabled",
-        enabled: inspectorEnabled || Boolean(temporaryInspectorMode) || dragEnabled,
-        dragEnabled: dragEnabled || temporaryInspectorMode === "drag"
+        enabled: inspectorEnabled || dragEnabled,
+        dragEnabled,
+        temporaryMode: temporaryInspectorMode
       },
       "*"
     );
@@ -968,6 +1028,41 @@ export default function App() {
       },
       "*"
     );
+  }
+
+  function openSiblingPicker(
+    event: React.MouseEvent<HTMLButtonElement>,
+    selector: string,
+    parentLabel: string
+  ) {
+    event.stopPropagation();
+    const requestId = siblingPickerRequestIdRef.current + 1;
+    siblingPickerRequestIdRef.current = requestId;
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const menuWidth = 280;
+    setSiblingPicker({
+      requestId,
+      currentSelector: selector,
+      parentLabel,
+      left: Math.max(8, Math.min(bounds.left, window.innerWidth - menuWidth - 8)),
+      top: bounds.bottom + 6,
+      loading: true,
+      options: []
+    });
+    iframeRef.current?.contentWindow?.postMessage(
+      {
+        source: "web-no-code-editor",
+        type: "inspector:list-siblings",
+        selector,
+        requestId
+      },
+      "*"
+    );
+  }
+
+  function selectSibling(selector: string) {
+    setSiblingPicker(null);
+    selectElementBySelector(selector);
   }
 
   function clearSelectedElement() {
@@ -1403,6 +1498,10 @@ export default function App() {
   function openCodexSettings() {
     setDraftCodexSandbox(codexSandbox);
     setDraftCodexWorkspaceMode(codexWorkspaceMode);
+    draftAgentsInstructionsRef.current = agentsInstructionsRef.current;
+    setDraftAgentsInstructions(agentsInstructionsRef.current);
+    draftGlobalAgentsInstructionsRef.current = globalAgentsInstructionsRef.current;
+    setDraftGlobalAgentsInstructions(globalAgentsInstructionsRef.current);
     setCodexModelPickerOpen(false);
     setAgentsViewerMode(null);
     closeSkillMenu();
@@ -1410,15 +1509,52 @@ export default function App() {
     if (workspaceRoot) void refreshAgentsInstructions(workspaceRoot);
   }
 
-  function saveCodexSettings() {
-    setCodexSandbox(draftCodexSandbox);
-    setCodexWorkspaceMode(draftCodexWorkspaceMode);
-    writeCodexSandboxStorage(draftCodexSandbox);
-    writeCodexWorkspaceModeStorage(draftCodexWorkspaceMode);
-    closeCodexSettings();
+  async function saveCodexSettings() {
+    if (codexSettingsSaving) return;
+    setCodexSettingsSaving(true);
+    let saving: "project" | "global" | "settings" = "project";
+    try {
+      if (draftAgentsInstructionsRef.current !== agentsInstructionsRef.current) {
+        if (!workspaceRoot) throw new Error("No project workspace available");
+        setAgentsInstructionsStatus("Saving...");
+        const result = await updateWorkspaceAgents(workspaceRoot, draftAgentsInstructionsRef.current);
+        if (normalizeCodexWorkspaceRoot(workspaceRoot) !== normalizeCodexWorkspaceRoot(workspaceRootRef.current)) return;
+        agentsInstructionsRef.current = result.content;
+        setAgentsInstructions(result.content);
+        setAgentsInstructionsStatus("Saved");
+      }
+
+      saving = "global";
+      if (draftGlobalAgentsInstructionsRef.current !== globalAgentsInstructionsRef.current) {
+        setGlobalAgentsInstructionsStatus("Saving...");
+        const result = await updateGlobalAgents(draftGlobalAgentsInstructionsRef.current);
+        globalAgentsInstructionsRef.current = result.content;
+        setGlobalAgentsInstructions(result.content);
+        setGlobalAgentsInstructionsStatus("Saved");
+      }
+
+      saving = "settings";
+      setCodexSandbox(draftCodexSandbox);
+      setCodexWorkspaceMode(draftCodexWorkspaceMode);
+      writeCodexSandboxStorage(draftCodexSandbox);
+      writeCodexWorkspaceModeStorage(draftCodexWorkspaceMode);
+      closeCodexSettings();
+    } catch (error) {
+      const message = formatAgentsApiError(error);
+      if (saving === "project") setAgentsInstructionsStatus(message);
+      if (saving === "global") setGlobalAgentsInstructionsStatus(message);
+    } finally {
+      setCodexSettingsSaving(false);
+    }
   }
 
   function closeCodexSettings() {
+    draftAgentsInstructionsRef.current = agentsInstructionsRef.current;
+    setDraftAgentsInstructions(agentsInstructionsRef.current);
+    draftGlobalAgentsInstructionsRef.current = globalAgentsInstructionsRef.current;
+    setDraftGlobalAgentsInstructions(globalAgentsInstructionsRef.current);
+    setDraftCodexSandbox(codexSandbox);
+    setDraftCodexWorkspaceMode(codexWorkspaceMode);
     setAgentsViewerMode(null);
     setCodexSettingsOpen(false);
   }
@@ -1436,15 +1572,15 @@ export default function App() {
         draftAgentsInstructionsRef.current = result.content;
         setDraftAgentsInstructions(result.content);
       }
+      const hasGlobalLocalChanges = draftGlobalAgentsInstructionsRef.current !== globalAgentsInstructionsRef.current;
+      globalAgentsInstructionsRef.current = result.global.content;
       setGlobalAgentsInstructions(result.global.content);
-      setGlobalAgentsInstructionsStatus(
-        result.global.exists
-          ? result.global.content.trim()
-            ? "Read only"
-            : "Read only - file is empty"
-          : "Global AGENTS.md not found"
-      );
-      setAgentsInstructionsStatus(result.exists ? "Synced with AGENTS.md" : "AGENTS.md will be created when you type");
+      if (!hasGlobalLocalChanges) {
+        draftGlobalAgentsInstructionsRef.current = result.global.content;
+        setDraftGlobalAgentsInstructions(result.global.content);
+      }
+      setGlobalAgentsInstructionsStatus(result.global.exists ? "Up to date" : "File will be created on save");
+      setAgentsInstructionsStatus(result.exists ? "Up to date" : "File will be created on save");
     } catch (error) {
       const message = formatAgentsApiError(error);
       setAgentsInstructionsStatus(message);
@@ -1455,44 +1591,17 @@ export default function App() {
   function handleAgentsInstructionsChange(value: string) {
     draftAgentsInstructionsRef.current = value;
     setDraftAgentsInstructions(value);
-    window.clearTimeout(agentsWriteTimerRef.current);
     if (!workspaceRoot) {
       setAgentsInstructionsStatus("No project workspace available");
       return;
     }
-    setAgentsInstructionsStatus("Saving AGENTS.md...");
-    const root = workspaceRoot;
-    pendingAgentsWriteRef.current = { root, content: value };
-    agentsWriteTimerRef.current = window.setTimeout(() => {
-      agentsWriteTimerRef.current = 0;
-      pendingAgentsWriteRef.current = null;
-      void persistAgentsInstructions(root, value);
-    }, AGENTS_WRITE_DEBOUNCE_MS);
+    setAgentsInstructionsStatus(value === agentsInstructionsRef.current ? "Up to date" : "Unsaved changes");
   }
 
-  function flushPendingAgentsWrite(keepalive = false) {
-    window.clearTimeout(agentsWriteTimerRef.current);
-    agentsWriteTimerRef.current = 0;
-    const pending = pendingAgentsWriteRef.current;
-    pendingAgentsWriteRef.current = null;
-    if (!pending) return;
-    void updateWorkspaceAgents(pending.root, pending.content, keepalive).catch((error) => {
-      if (!keepalive) setAgentsInstructionsStatus(formatAgentsApiError(error));
-    });
-  }
-
-  async function persistAgentsInstructions(root: string, content: string) {
-    try {
-      const result = await updateWorkspaceAgents(root, content);
-      if (normalizeCodexWorkspaceRoot(root) !== normalizeCodexWorkspaceRoot(workspaceRootRef.current)) return;
-      agentsInstructionsRef.current = result.content;
-      setAgentsInstructions(result.content);
-      if (draftAgentsInstructionsRef.current === result.content) {
-        setAgentsInstructionsStatus("Saved to AGENTS.md");
-      }
-    } catch (error) {
-      setAgentsInstructionsStatus(formatAgentsApiError(error));
-    }
+  function handleGlobalAgentsInstructionsChange(value: string) {
+    draftGlobalAgentsInstructionsRef.current = value;
+    setDraftGlobalAgentsInstructions(value);
+    setGlobalAgentsInstructionsStatus(value === globalAgentsInstructionsRef.current ? "Up to date" : "Unsaved changes");
   }
 
   function selectCodexModel(model: CodexModel) {
@@ -1856,7 +1965,7 @@ export default function App() {
     if (submittedAt - (codexLastSubmitAtRef.current[taskId] || 0) < CODEX_SEND_DEBOUNCE_MS) return;
     codexLastSubmitAtRef.current[taskId] = submittedAt;
     codexTurnBusyRef.current[taskId] = true;
-    setBusy(true, taskId);
+    setBusy(true, taskId, turnBusy ? undefined : submittedAt);
     setCodexInput("");
     clearCodexAttachments(attachments);
     closeSkillMenu();
@@ -2096,7 +2205,7 @@ export default function App() {
   }
 
   function temporaryInspectorModeFromKey(key: string): "select" | "drag" | null {
-    if (key === "Alt" || key === "Option") return temporaryInspectorMode || null;
+    if (key === "Alt" || key === "Option") return "select";
     return null;
   }
 
@@ -2468,7 +2577,7 @@ export default function App() {
                     <div className="codex-settings-header">
                       <div>
                         <strong>Codex settings</strong>
-                        <span>Project instructions sync directly with AGENTS.md</span>
+                        <span>Workspace and instruction files</span>
                       </div>
                       <button
                         type="button"
@@ -2505,7 +2614,7 @@ export default function App() {
                       <div className="agents-document-header">
                         <div>
                           <strong id="global-agents-title">Global AGENTS.md</strong>
-                          <small>{globalAgentsInstructionsStatus}</small>
+                          <small>~/.codex/AGENTS.md</small>
                         </div>
                         <button
                           type="button"
@@ -2519,12 +2628,13 @@ export default function App() {
                       </div>
                       <textarea
                         className="agents-document-input agents-document-input-global"
-                        value={globalAgentsInstructions}
+                        value={draftGlobalAgentsInstructions}
                         placeholder="No global rules configured in ~/.codex/AGENTS.md"
-                        readOnly
+                        onChange={(event) => handleGlobalAgentsInstructionsChange(event.target.value)}
                         aria-label="Global AGENTS.md rules"
                       />
                       <div className="agents-document-meta">
+                        <span>{globalAgentsInstructionsStatus}</span>
                         <span>{globalAgentsStats.lines} lines</span>
                         <span>{globalAgentsStats.characters} characters</span>
                       </div>
@@ -2533,7 +2643,7 @@ export default function App() {
                       <div className="agents-document-header">
                         <div>
                           <strong id="project-agents-title">Project AGENTS.md</strong>
-                          <small>{agentsInstructionsStatus}</small>
+                          <small>AGENTS.md</small>
                         </div>
                         <button
                           type="button"
@@ -2554,6 +2664,7 @@ export default function App() {
                         aria-label="Project AGENTS.md rules"
                       />
                       <div className="agents-document-meta">
+                        <span>{agentsInstructionsStatus}</span>
                         <span>{projectAgentsStats.lines} lines</span>
                         <span>{projectAgentsStats.characters} characters</span>
                       </div>
@@ -2562,11 +2673,11 @@ export default function App() {
                       <button
                         type="button"
                         className="command-button"
-                        onClick={saveCodexSettings}
-                        disabled={!codexSettingsDirty}
+                        onClick={() => void saveCodexSettings()}
+                        disabled={!codexSettingsDirty || codexSettingsSaving}
                       >
-                        <Save size={14} />
-                        Save settings
+                        {codexSettingsSaving ? <Loader2 className="spin" size={14} /> : <Save size={14} />}
+                        Save
                       </button>
                     </div>
                   </aside>
@@ -2592,7 +2703,7 @@ export default function App() {
                               {agentsViewerMode === "global" ? "Global AGENTS.md" : "Project AGENTS.md"}
                             </strong>
                             <span>
-                              {agentsViewerMode === "global" ? globalAgentsInstructionsStatus : agentsInstructionsStatus}
+                              {agentsViewerMode === "global" ? "~/.codex/AGENTS.md" : "AGENTS.md"}
                             </span>
                           </div>
                           <button
@@ -2607,24 +2718,23 @@ export default function App() {
                         </header>
                         <textarea
                           className="agents-viewer-input"
-                          value={agentsViewerMode === "global" ? globalAgentsInstructions : draftAgentsInstructions}
+                          value={agentsViewerMode === "global" ? draftGlobalAgentsInstructions : draftAgentsInstructions}
                           placeholder={
                             agentsViewerMode === "global"
                               ? "No global rules configured in ~/.codex/AGENTS.md"
                               : "Project instructions for Codex"
                           }
-                          readOnly={agentsViewerMode === "global"}
                           disabled={agentsViewerMode === "project" && !workspaceRoot}
                           onChange={
-                            agentsViewerMode === "project"
-                              ? (event) => handleAgentsInstructionsChange(event.target.value)
-                              : undefined
+                            agentsViewerMode === "global"
+                              ? (event) => handleGlobalAgentsInstructionsChange(event.target.value)
+                              : (event) => handleAgentsInstructionsChange(event.target.value)
                           }
                           autoFocus
                           aria-label={`${agentsViewerMode === "global" ? "Global" : "Project"} AGENTS.md rules`}
                         />
                         <footer className="agents-viewer-footer">
-                          <span>{agentsViewerMode === "global" ? "~/.codex/AGENTS.md" : `${workspaceRoot}/AGENTS.md`}</span>
+                          <span>{agentsViewerMode === "global" ? "~/.codex/AGENTS.md" : "AGENTS.md"}</span>
                           <span>
                             {agentsViewerMode === "global" ? globalAgentsStats.lines : projectAgentsStats.lines} lines ·{" "}
                             {agentsViewerMode === "global" ? globalAgentsStats.characters : projectAgentsStats.characters} characters
@@ -2666,16 +2776,30 @@ export default function App() {
             <Crosshair size={15} />
             {selected?.selector ? (
               <div className="selector-breadcrumb" aria-label="Selected element path">
-                {selectorBreadcrumbs(selected.pathSelector || selected.selector).map((item, index) => (
-                  <button
-                    key={item.selector}
-                    type="button"
-                    title={item.selector}
-                    onClick={() => selectElementBySelector(item.selector)}
-                  >
-                    {index ? <span aria-hidden="true">&gt;</span> : null}
-                    <code>{item.label}</code>
-                  </button>
+                {selectorBreadcrumbs(selected.pathSelector || selected.selector).map((item, index, items) => (
+                  <div className="selector-breadcrumb-step" key={item.selector}>
+                    {index ? (
+                      <button
+                        className="selector-sibling-trigger"
+                        type="button"
+                        title={`Show siblings of ${item.label}`}
+                        aria-label={`Show siblings of ${item.label}`}
+                        aria-haspopup="menu"
+                        aria-expanded={siblingPicker?.currentSelector === item.selector}
+                        onClick={(event) => openSiblingPicker(event, item.selector, items[index - 1]?.label || "parent")}
+                      >
+                        <ChevronRight size={14} aria-hidden="true" />
+                      </button>
+                    ) : null}
+                    <button
+                      className="selector-breadcrumb-target"
+                      type="button"
+                      title={item.selector}
+                      onClick={() => selectElementBySelector(item.selector)}
+                    >
+                      <code>{item.label}</code>
+                    </button>
+                  </div>
                 ))}
               </div>
             ) : (
@@ -2955,8 +3079,69 @@ export default function App() {
           </form>
         </div>
       ) : null}
+      {siblingPicker ? (
+        <div
+          ref={siblingPickerRef}
+          className="selector-sibling-menu"
+          role="menu"
+          aria-label={`Elements inside ${siblingPicker.parentLabel}`}
+          style={{ left: siblingPicker.left, top: siblingPicker.top }}
+        >
+          <div className="selector-sibling-menu__header">
+            <span>Elements</span>
+            <small>{siblingPicker.options.length || ""}</small>
+          </div>
+          {siblingPicker.loading ? (
+            <div className="selector-sibling-menu__status">
+              <Loader2 className="spin" size={14} aria-hidden="true" />
+              Loading elements...
+            </div>
+          ) : siblingPicker.options.length ? (
+            <div className="selector-sibling-menu__list">
+              {siblingPicker.options.map((option) => {
+                const active = option.selector === siblingPicker.currentSelector;
+                return (
+                  <button
+                    key={option.selector}
+                    className={active ? "active" : ""}
+                    type="button"
+                    role="menuitem"
+                    aria-current={active ? "true" : undefined}
+                    title={option.selector}
+                    onClick={() => selectSibling(option.selector)}
+                  >
+                    <span className="selector-sibling-menu__marker">{active ? <Check size={14} /> : null}</span>
+                    <span>
+                      <code>{option.label}</code>
+                      {option.text ? <small>{option.text}</small> : null}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="selector-sibling-menu__status">No sibling elements</div>
+          )}
+        </div>
+      ) : null}
     </div>
   );
+}
+
+function normalizeSiblingOptions(value: unknown): SiblingOption[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const option = item as Record<string, unknown>;
+    const selector = typeof option.selector === "string" ? option.selector : "";
+    const label = typeof option.label === "string" ? option.label : "";
+    if (!selector || !label) return [];
+    return [{
+      selector,
+      label,
+      text: typeof option.text === "string" ? option.text : undefined
+    }];
+  });
 }
 
 function createPreviewQueryParam(key = "", value = ""): PreviewQueryParam {
@@ -3834,6 +4019,7 @@ function createEmptyCodexTask(init: Partial<Omit<CodexTask, "id" | "createdAt" |
     attachments: init.attachments || [],
     chatMessages: init.chatMessages || [],
     busy: Boolean(init.busy),
+    turnStartedAt: init.turnStartedAt,
     createdAt: now,
     updatedAt: now
   };
@@ -3857,6 +4043,9 @@ function normalizeStoredCodexTask(value: unknown): CodexTask | null {
     attachments,
     chatMessages,
     busy: Boolean(task.busy && task.threadId),
+    turnStartedAt: typeof task.turnStartedAt === "number" && Number.isFinite(task.turnStartedAt)
+      ? task.turnStartedAt
+      : undefined,
     createdAt: typeof task.createdAt === "number" ? task.createdAt : Date.now(),
     updatedAt: typeof task.updatedAt === "number" ? task.updatedAt : Date.now()
   };

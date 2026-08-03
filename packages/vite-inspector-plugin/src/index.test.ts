@@ -30,6 +30,8 @@ test("omits Vue inspector support when disabled independently", () => {
 test("injects the runtime without overriding the browser user agent", () => {
   const html = transformHtml({ vueInspector: false }, "<html><head></head></html>");
   assert.match(html, /inspector-runtime/);
+  assert.match(html, /inspector:list-siblings/);
+  assert.match(html, /sibling-options/);
   assert.doesNotMatch(html, /navigator\.userAgent|iPhone/);
 });
 

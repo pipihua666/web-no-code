@@ -883,10 +883,13 @@ function handleMessage(event) {
   if (message.type === "inspector:set-enabled") {
     STATE.enabled = !!message.enabled;
     STATE.dragEnabled = !!message.dragEnabled;
+    STATE.temporaryMode = message.temporaryMode === "select" || message.temporaryMode === "drag"
+      ? message.temporaryMode
+      : null;
     updateDraggableCursor(STATE.hover || STATE.selected);
-    if (!STATE.enabled) {
+    if (!isInspectorActive()) {
       STATE.hover = null;
-      clearSelectedElement();
+      hideOverlay();
       releaseInspectorCaches();
     }
   }
@@ -895,6 +898,9 @@ function handleMessage(event) {
   }
   if (message.type === "inspector:select-element") {
     selectElement(findElement(message.selector));
+  }
+  if (message.type === "inspector:list-siblings") {
+    postSiblingOptions(message.selector, message.requestId);
   }
   if (message.type === "inspector:clear-selected") {
     clearSelectedElement();
@@ -1075,6 +1081,36 @@ function findElement(selector) {
   }
 }
 
+function postSiblingOptions(selector, requestId) {
+  const element = findElement(selector);
+  const siblings = element?.parentElement
+    ? Array.from(element.parentElement.children).filter(isInspectable)
+    : [];
+  post("sibling-options", {
+    requestId,
+    currentSelector: element ? cssPath(element) : selector,
+    options: siblings.map((sibling) => ({
+      selector: cssPath(sibling),
+      label: siblingElementLabel(sibling),
+      text: siblingElementText(sibling)
+    }))
+  });
+}
+
+function siblingElementLabel(element) {
+  const tagName = element.tagName?.toLowerCase() || "element";
+  if (element.id) return tagName + "#" + CSS.escape(element.id);
+  const classes = Array.from(element.classList || []).slice(0, 3);
+  return tagName + classes.map((item) => "." + CSS.escape(item)).join("");
+}
+
+function siblingElementText(element) {
+  return (element.getAttribute("aria-label") || element.textContent || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 64);
+}
+
 function handleMouseMove(event) {
   if (!isInspectorActive()) return;
   if (STATE.drag) {
@@ -1158,7 +1194,8 @@ function updateDrag(event) {
 }
 
 function handleClick(event) {
-  if (!isInspectorActive()) return;
+  const temporarySelect = event.altKey && !event.metaKey && !event.ctrlKey;
+  if (!isInspectorActive() && !temporarySelect) return;
   if (STATE.drag) return;
   if (Date.now() < STATE.suppressClickUntil) {
     event.preventDefault();

@@ -67,6 +67,8 @@ For faster source lookup, give editable elements stable, unique CSS selectors an
 2. Click an element in the preview.
 3. Its source and styles appear in the editor.
 
+The selected element path appears as breadcrumbs in the top toolbar. Click a `>` separator to list the elements that share the same parent, then choose one to switch the selection without returning to the preview.
+
 ### Change CSS
 
 Edit a value in the CSS Rules panel, then press `Enter` or leave the input to save it.
