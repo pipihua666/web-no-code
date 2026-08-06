@@ -480,18 +480,50 @@ textarea {
   background: #9e3a2a;
 }
 
-.codex-context-chip {
-  display: grid;
-  grid-template-columns: 16px minmax(0, max-content) minmax(0, 1fr) 28px;
-  gap: 7px;
-  align-items: center;
+.codex-context-list {
+  display: flex;
+  gap: 6px;
   min-width: 0;
+  overflow-x: auto;
+  padding: 1px 0 3px;
+  scrollbar-width: thin;
+}
+
+.codex-context-chip {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+  align-items: center;
+  min-width: 132px;
+  max-width: 100%;
   min-height: 34px;
   padding: 4px 5px 4px 8px;
   border: 1px solid rgba(43, 111, 91, 0.28);
   border-radius: 6px;
   color: #17211e;
   background: rgba(43, 214, 163, 0.11);
+}
+
+.codex-context-chip.active {
+  border-color: rgba(185, 126, 20, 0.48);
+  background: rgba(255, 191, 71, 0.15);
+}
+
+.codex-context-index {
+  display: inline-grid;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 3px;
+  border-radius: 3px;
+  color: #17342c;
+  background: rgba(43, 214, 163, 0.3);
+  font: 700 10px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.codex-context-chip.active .codex-context-index {
+  color: #382704;
+  background: #ffbf47;
 }
 
 .codex-context-chip svg {
@@ -519,6 +551,8 @@ textarea {
 }
 
 .codex-context-chip .icon-button {
+  flex: 0 0 auto;
+  margin-left: auto;
   width: 26px;
   height: 26px;
   padding: 0;
@@ -1220,14 +1254,41 @@ textarea {
   font-weight: 700;
 }
 
-.chat-element-summary {
+.chat-element-summaries {
   display: grid;
-  gap: 4px;
   margin-bottom: 8px;
-  padding: 7px;
   border: 1px solid rgba(24, 33, 31, 0.1);
   border-radius: 5px;
   background: rgba(255, 252, 242, 0.72);
+}
+
+.chat-element-summary {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 7px;
+}
+
+.chat-element-summary + .chat-element-summary {
+  border-top: 1px solid rgba(24, 33, 31, 0.1);
+}
+
+.chat-element-summary-heading {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.chat-element-summary-heading span {
+  display: inline-grid;
+  place-items: center;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 3px;
+  border-radius: 3px;
+  color: #17342c;
+  background: rgba(43, 214, 163, 0.28);
+  font: 700 9px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .chat-element-summary strong {
@@ -1519,7 +1580,7 @@ textarea:focus {
   color: #45534d;
   font-size: 13px;
   white-space: nowrap;
-  overflow: auto;
+  overflow: hidden;
   scrollbar-width: none;
 }
 
@@ -1529,7 +1590,13 @@ textarea:focus {
   align-items: center;
   flex: 1 1 auto;
   min-width: 0;
-  overflow: visible;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.selector-breadcrumb::-webkit-scrollbar {
+  display: none;
 }
 
 .selector-breadcrumb-step {

@@ -67,7 +67,11 @@ For faster source lookup, give editable elements stable, unique CSS selectors an
 2. Click an element in the preview.
 3. Its source and styles appear in the editor.
 
-The selected element path appears as breadcrumbs in the top toolbar. Click a `>` separator to list the elements that share the same parent, then choose one to switch the selection without returning to the preview.
+Hold `Shift` while clicking to add or remove elements from the selection, up to eight elements. When selection mode is off, hold `Option` / `Alt` to select temporarily; combine it with `Shift` to add or remove elements. The most recently selected element remains active for CSS, image, and source tools.
+
+In a multi-selection, context chips show their selection numbers. The active Codex context chip and element use amber highlighting, while the additional elements use green highlighting and dashed outlines. A single context chip does not show a number.
+
+The selected element path appears as breadcrumbs in the top toolbar and automatically scrolls to keep the final selected element visible. Click a `>` separator to list the elements that share the same parent, then choose one to switch the selection without returning to the preview.
 
 ### Change CSS
 
@@ -77,7 +81,11 @@ For numeric values, use `Arrow Up` and `Arrow Down`. Hold `Shift` to change by `
 
 ### Ask Codex To Make A Change
 
-Select an element, keep its context attached in the Codex input, and describe the change. Web No Code sends the related selector, component, style source, and page information with your request.
+Select one or more elements, keep their context chips attached in the Codex input, and describe the change. Web No Code sends each element's compact leaf selector, such as `div.relationship-rank-countdown`, together with its source location. Full DOM paths remain internal to the editor. Remove a chip to remove that element from the selection.
+
+After sending, the user message keeps a numbered summary of every selected element that was included in that Codex turn.
+
+When a new element is added, the Codex context list automatically scrolls its active chip into view.
 
 This feature requires a local Codex CLI. If `codex` is not on `PATH`, set `CODEX_BIN`:
 
@@ -102,6 +110,8 @@ Edit the URL above the preview and press `Enter`. Use the parameter button to ed
 | -------------------------- | ------------------------------------------- |
 | `Ctrl+C`                   | Turn element selection on or off            |
 | Hold `Option` / `Alt`      | Temporarily select elements                 |
+| `Shift+Click`              | Add or remove an element from the selection |
+| `Option+Shift+Click`       | Temporarily add or remove an element        |
 | `Ctrl+S`                   | Open the nearest source in VS Code          |
 | `Enter`                    | Send a Codex prompt or save a CSS value     |
 | `Shift+Enter`              | Add a new line to a Codex prompt            |

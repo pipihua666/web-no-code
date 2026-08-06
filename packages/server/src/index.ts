@@ -205,6 +205,9 @@ app.post("/api/codex/turn", async (request, response) => {
         threadId: String(request.body.threadId || ""),
         input: String(request.body.input || ""),
         attachments: Array.isArray(request.body.attachments) ? request.body.attachments : [],
+        selectedElementContexts: Array.isArray(request.body.selectedElementContexts)
+          ? request.body.selectedElementContexts
+          : undefined,
         selectedElementContext: request.body.selectedElementContext || null
       })
     );
@@ -220,6 +223,9 @@ app.post("/api/codex/steer", async (request, response) => {
         threadId: String(request.body.threadId || ""),
         input: String(request.body.input || ""),
         attachments: Array.isArray(request.body.attachments) ? request.body.attachments : [],
+        selectedElementContexts: Array.isArray(request.body.selectedElementContexts)
+          ? request.body.selectedElementContexts
+          : undefined,
         selectedElementContext: request.body.selectedElementContext || null
       })
     );

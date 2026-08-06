@@ -114,7 +114,7 @@ export async function runCodexTurn(payload: {
   threadId: string;
   input: string;
   attachments?: Array<{ type: "localImage"; path: string; name?: string }>;
-  selectedElementContext: SelectedElementContext | null;
+  selectedElementContexts: SelectedElementContext[];
 }) {
   return request("/api/codex/turn", {
     method: "POST",
@@ -135,7 +135,7 @@ export async function steerCodexTurn(payload: {
   threadId: string;
   input: string;
   attachments?: Array<{ type: "localImage"; path: string; name?: string }>;
-  selectedElementContext: SelectedElementContext | null;
+  selectedElementContexts: SelectedElementContext[];
 }) {
   return request("/api/codex/steer", {
     method: "POST",

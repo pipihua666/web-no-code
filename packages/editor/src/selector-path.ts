@@ -10,6 +10,11 @@ export function displaySelector(selector: string) {
   return selector.split(" > ").filter(Boolean).map(compactSelectorPart).join(" > ");
 }
 
+export function leafSelector(selector: string) {
+  const leaf = selector.split(" > ").filter(Boolean).at(-1) || "";
+  return compactSelectorPart(leaf);
+}
+
 export function compactSelectorPart(part: string) {
   return part.replace(/:nth-of-type\(\d+\)/g, "");
 }

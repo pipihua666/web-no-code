@@ -773,6 +773,7 @@ const PROJECT_INFO = __WEB_NO_CODE_PROJECT_INFO__;
 const SOURCE_FILE_CACHE_LIMIT = 24;
 const STYLE_MODULE_CACHE_LIMIT = 16;
 const SOURCE_MAP_POSITION_CACHE_LIMIT = 1000;
+const MAX_SELECTED_ELEMENTS = 8;
 
 const STATE = {
   enabled: false,
@@ -780,7 +781,9 @@ const STATE = {
   dragEnabled: false,
   hover: null,
   selected: null,
+  selectedElements: [],
   overlay: null,
+  selectionOverlays: [],
   badge: null,
   measureLayer: null,
   measuring: false,
@@ -871,7 +874,7 @@ function installHmrUpdateFallback() {
       STATE.sourceMapPositions.clear();
       STATE.sourceFiles.clear();
       if (STATE.selected) {
-        post("selected", serializeElement(STATE.selected));
+        postSelection();
       }
     }, 80);
   });
@@ -898,6 +901,9 @@ function handleMessage(event) {
   }
   if (message.type === "inspector:select-element") {
     selectElement(findElement(message.selector));
+  }
+  if (message.type === "inspector:remove-selected") {
+    removeSelectedElement(message.selector, message.selectionIndex);
   }
   if (message.type === "inspector:list-siblings") {
     postSiblingOptions(message.selector, message.requestId);
@@ -995,6 +1001,7 @@ function handleKeyDown(event) {
   const temporaryMode = temporaryModeFromEvent(event);
   if (temporaryMode) {
     STATE.temporaryMode = temporaryMode;
+    renderSelectionOverlays();
     updateDraggableCursor(STATE.hover || STATE.selected);
     post("temporary-inspector", { active: true, mode: temporaryMode });
     return;
@@ -1206,7 +1213,7 @@ function handleClick(event) {
   if (!isInspectable(target)) return;
   event.preventDefault();
   event.stopPropagation();
-  selectElement(target);
+  selectElement(target, event.shiftKey);
 }
 
 function handleDoubleClick(event) {
@@ -1215,7 +1222,7 @@ function handleDoubleClick(event) {
   if (below) {
     event.preventDefault();
     event.stopPropagation();
-    selectElement(below);
+    selectElement(below, event.shiftKey);
     return;
   }
   const root = deepestSelectableParent(event.target) || STATE.selected;
@@ -1223,7 +1230,7 @@ function handleDoubleClick(event) {
   if (!child) return;
   event.preventDefault();
   event.stopPropagation();
-  selectElement(child);
+  selectElement(child, event.shiftKey);
 }
 
 function elementBelowPoint(x, y, currentTarget) {
@@ -1257,22 +1264,57 @@ function isElementBelowTarget(element, currentTarget) {
   return true;
 }
 
-function selectElement(element) {
+function selectElement(element, additive = false) {
   if (!isInspectable(element)) return;
+  const existingIndex = STATE.selectedElements.indexOf(element);
+  if (additive && existingIndex >= 0) {
+    STATE.selectedElements.splice(existingIndex, 1);
+    STATE.selected = STATE.selectedElements.at(-1) || null;
+    renderSelectionOverlays();
+    if (STATE.selected) drawOverlay(STATE.selected, true);
+    else hideOverlay();
+    postSelection();
+    updateDraggableCursor(STATE.selected || STATE.hover);
+    return;
+  }
+  if (additive && STATE.selectedElements.length >= MAX_SELECTED_ELEMENTS) {
+    post("status", { message: "You can send up to " + MAX_SELECTED_ELEMENTS + " selected elements to Codex" });
+    return;
+  }
+  STATE.selectedElements = additive ? [...STATE.selectedElements, element] : [element];
   STATE.selected = element;
   drawOverlay(element, true);
+  renderSelectionOverlays();
   updateDraggableCursor(element);
   resolveElementSource(element);
   warmStyleSourceMaps(element);
+  postSelection();
+}
+
+function removeSelectedElement(selector, selectionIndex) {
+  const requestedIndex = Number(selectionIndex);
+  const index = Number.isInteger(requestedIndex) && requestedIndex >= 0 && requestedIndex < STATE.selectedElements.length
+    ? requestedIndex
+    : STATE.selectedElements.findIndex((element) => cssPath(element) === selector || fullCssPath(element) === selector);
+  if (index < 0) return;
+  const element = STATE.selectedElements[index];
+  STATE.selectedElements.splice(index, 1);
+  if (STATE.selected === element) STATE.selected = STATE.selectedElements.at(-1) || null;
+  renderSelectionOverlays();
+  if (STATE.selected) drawOverlay(STATE.selected, true);
+  else hideOverlay();
+  updateDraggableCursor(STATE.selected || STATE.hover);
+  postSelection();
 }
 
 function clearSelectedElement() {
   STATE.selected = null;
+  STATE.selectedElements = [];
   clearTimeout(STATE.selectedRefreshTimer);
   STATE.selectedRefreshTimer = 0;
   hideOverlay();
   updateDraggableCursor(STATE.hover);
-  post("selected", null);
+  postSelection();
 }
 
 function releaseInspectorCaches() {
@@ -1412,6 +1454,7 @@ function refreshOverlay() {
     refreshMeasurements();
     return;
   }
+  renderSelectionOverlays();
   if (STATE.selected) drawOverlay(STATE.selected, true);
   else if (STATE.hover) drawOverlay(STATE.hover, false);
   refreshMeasurements();
@@ -1438,6 +1481,46 @@ function drawOverlay(element, selected) {
   STATE.badge.textContent = badgeText(element, rect);
   placeBadge(rect);
   refreshMeasurements();
+}
+
+function renderSelectionOverlays() {
+  for (const overlay of STATE.selectionOverlays) overlay.remove();
+  STATE.selectionOverlays = [];
+  if (!isInspectorActive()) return;
+  STATE.selectedElements.forEach((element, index) => {
+    if (!isInspectable(element) || element === STATE.selected) return;
+    const rect = element.getBoundingClientRect();
+    const overlay = document.createElement("div");
+    overlay.style.cssText = [
+      "position:fixed",
+      "z-index:2147483645",
+      "pointer-events:none",
+      "left:" + rect.left + "px",
+      "top:" + rect.top + "px",
+      "width:" + rect.width + "px",
+      "height:" + rect.height + "px",
+      "border:1.5px dashed #2b6f5b",
+      "background:rgba(43,214,163,.07)"
+    ].join(";");
+    const number = document.createElement("span");
+    number.textContent = String(index + 1);
+    number.style.cssText = [
+      "position:absolute",
+      "top:2px",
+      "left:2px",
+      "min-width:17px",
+      "height:17px",
+      "padding:0 4px",
+      "border-radius:3px",
+      "color:#ecfff8",
+      "background:#2b6f5b",
+      "font:700 11px/17px ui-monospace, SFMono-Regular, Menlo, monospace",
+      "text-align:center"
+    ].join(";");
+    overlay.appendChild(number);
+    document.documentElement.appendChild(overlay);
+    STATE.selectionOverlays.push(overlay);
+  });
 }
 
 function placeBadge(targetRect) {
@@ -1624,7 +1707,17 @@ function clamp(value, min, max) {
 function hideOverlay() {
   STATE.overlay.style.display = "none";
   STATE.badge.style.display = "none";
+  for (const overlay of STATE.selectionOverlays) overlay.remove();
+  STATE.selectionOverlays = [];
   hideMeasurements();
+}
+
+function postSelection() {
+  post("selected", STATE.selected ? serializeElement(STATE.selected) : null);
+  post("selected-elements", {
+    activeSelector: STATE.selected ? cssPath(STATE.selected) : "",
+    elements: STATE.selectedElements.filter(isInspectable).map(serializeElement)
+  });
 }
 
 function serializeElement(element) {
@@ -1770,7 +1863,7 @@ function loadVueInspectorListeners() {
 
 function resolveElementSource(element) {
   if (readResolvedSource(element).file) {
-    if (STATE.selected === element) post("selected", serializeElement(element));
+    if (STATE.selectedElements.includes(element)) postSelection();
     return;
   }
   const requestId = (element.__webNoCodeSourceRequestId || 0) + 1;
@@ -1792,7 +1885,7 @@ function resolveElementSource(element) {
     .catch(() => {})
     .finally(() => {
       if (element.__webNoCodeSourceRequestId !== requestId) return;
-      if (STATE.selected === element) post("selected", serializeElement(element));
+      if (STATE.selectedElements.includes(element)) postSelection();
     });
 }
 
@@ -2655,7 +2748,7 @@ function scheduleSelectedRefresh() {
   clearTimeout(STATE.selectedRefreshTimer);
   STATE.selectedRefreshTimer = window.setTimeout(() => {
     STATE.selectedRefreshTimer = 0;
-    if (STATE.selected) post("selected", serializeElement(STATE.selected));
+    if (STATE.selected) postSelection();
   }, 50);
 }
 
@@ -2921,7 +3014,13 @@ function compactElementSelector(element) {
 
 function badgeText(element, rect) {
   const className = element.classList.length ? "." + Array.from(element.classList).join(".") : "";
-  return element.tagName.toLowerCase() + className + " " + Math.round(rect.width) + "x" + Math.round(rect.height);
+  const selectedIndex = STATE.selectedElements.indexOf(element);
+  const selectionLabel = selectedIndex < 0
+    ? ""
+    : STATE.selectedElements.length > 1
+      ? "Active " + (selectedIndex + 1) + "/" + STATE.selectedElements.length + " | "
+      : "Selected | ";
+  return selectionLabel + element.tagName.toLowerCase() + className + " " + Math.round(rect.width) + "x" + Math.round(rect.height);
 }
 
 function post(type, payload) {

@@ -14,6 +14,7 @@ import type {
   CodexModel,
   CodexEvent,
   CodexProvider,
+  SelectedElementContext,
   CodexTurnStatus,
   EventSink,
   ProviderStatus,
@@ -942,30 +943,34 @@ function asRecord(value: unknown) {
 }
 
 function buildPrompt(options: RunTurnOptions) {
-  const context = compactSelectedElementContext(options.selectedElementContext);
-  const hasSelectedElement = Boolean(options.selectedElementContext);
+  const selectedElements = selectedElementContexts(options);
+  const context = selectedElements.map(compactSelectedElementContext);
+  const hasSelectedElements = selectedElements.length > 0;
   return [
     "You are editing a local Vite project through Web No Code.",
-    hasSelectedElement
-      ? "Make only the source changes needed for the user's selected element request."
+    hasSelectedElements
+      ? "Make only the source changes needed for the user's selected elements request."
       : "No element is selected, so handle the user's request across the project scope.",
     "Return a concise summary and rely on file changes for the diff. The UI will require user confirmation before applying visible edits.",
     "",
     "User request:",
     options.input,
     "",
-    "Selected element context:",
+    "Selected element contexts, in selection order:",
     JSON.stringify(context, null, 2)
   ].join("\n");
 }
 
-function compactSelectedElementContext(selected: RunTurnOptions["selectedElementContext"]) {
-  if (!selected) return {};
-
+function compactSelectedElementContext(selected: SelectedElementContext) {
   return {
     selector: selected.selector,
     elementSource: selected.elementSource
   };
+}
+
+function selectedElementContexts(options: RunTurnOptions) {
+  if (options.selectedElementContexts?.length) return options.selectedElementContexts;
+  return options.selectedElementContext ? [options.selectedElementContext] : [];
 }
 
 function buildTurnInput(options: RunTurnOptions) {

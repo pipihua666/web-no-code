@@ -64,6 +64,7 @@ export type RunTurnOptions = {
     path: string;
     name?: string;
   }>;
+  selectedElementContexts?: SelectedElementContext[];
   selectedElementContext?: SelectedElementContext | null;
 };
 

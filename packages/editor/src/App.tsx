@@ -62,7 +62,7 @@ import {
 import type { CodexModel, RegisteredTarget, TargetAlias, WorkspaceAgentsEvent } from "./api";
 import type { CodexEvent, SelectedElementContext } from "@web-no-code/server/codex/types";
 import { resolveAssetPreviewUrl, resolveBackgroundAssetSource } from "./asset-preview";
-import { compactSelectorPart, displaySelector, selectorBreadcrumbs } from "./selector-path";
+import { displaySelector, leafSelector, selectorBreadcrumbs } from "./selector-path";
 
 const DEFAULT_TARGET = "about:blank";
 const DEFAULT_ROOT = "";
@@ -91,6 +91,7 @@ type ChatMessage = {
   role: "user" | "assistant";
   content: string;
   elapsedMs?: number;
+  elements?: ElementSummary[];
   element?: ElementSummary | null;
 };
 
@@ -170,6 +171,7 @@ const CodexChatMessageView = memo(function CodexChatMessageView({
   streaming: boolean;
   activityElapsedMs: number;
 }) {
+  const elements = chatMessageElements(message);
   const activity = streaming ? (
     <div className="codex-live-activity" aria-label="Codex is working">
       <Loader2 className="spin" size={13} aria-hidden="true" />
@@ -183,11 +185,18 @@ const CodexChatMessageView = memo(function CodexChatMessageView({
         <span>{message.role === "user" ? "You" : "Codex"}</span>
         {message.elapsedMs != null ? <small>{formatElapsedTime(message.elapsedMs)}</small> : null}
       </div>
-      {message.element ? (
-        <div className="chat-element-summary">
-          <strong>{message.element.tagName}</strong>
-          <code>{message.element.selector}</code>
-          {message.element.source ? <small>{message.element.source}</small> : null}
+      {elements.length ? (
+        <div className="chat-element-summaries" aria-label={`${elements.length} selected element${elements.length === 1 ? "" : "s"}`}>
+          {elements.map((element, index) => (
+            <div className="chat-element-summary" key={`${element.selector}:${element.source}:${index}`}>
+              <div className="chat-element-summary-heading">
+                {elements.length > 1 ? <span>{index + 1}</span> : null}
+                <strong>{element.tagName}</strong>
+              </div>
+              <code>{element.selector}</code>
+              {element.source ? <small>{element.source}</small> : null}
+            </div>
+          ))}
         </div>
       ) : null}
       {message.role === "assistant" ? (
@@ -221,6 +230,7 @@ export default function App() {
   const pendingCodexTaskScrollRef = useRef(persistedCodexSession.activeTaskId);
   const skillMenuRef = useRef<HTMLDivElement | null>(null);
   const codexModelPickerRef = useRef<HTMLDivElement | null>(null);
+  const codexContextListRef = useRef<HTMLDivElement | null>(null);
   const selectorBreadcrumbRef = useRef<HTMLDivElement | null>(null);
   const siblingPickerRef = useRef<HTMLDivElement | null>(null);
   const siblingPickerRequestIdRef = useRef(0);
@@ -266,6 +276,7 @@ export default function App() {
   const [temporaryInspectorMode, setTemporaryInspectorMode] = useState<"select" | "drag" | null>(null);
   const [dragEnabled, setDragEnabled] = useState(false);
   const [selected, setSelected] = useState<SelectedElementContext | null>(null);
+  const [selectedElements, setSelectedElements] = useState<SelectedElementContext[]>([]);
   const [siblingPicker, setSiblingPicker] = useState<SiblingPickerState | null>(null);
   const [codexElementEnabled, setCodexElementEnabled] = useState(false);
   const [codexElementVisible, setCodexElementVisible] = useState(false);
@@ -576,9 +587,22 @@ export default function App() {
       if (message.type === "selected") {
         if (message.payload?.selector) {
           setSelected(message.payload);
+          setSelectedElements((current) => current.length ? current : [message.payload]);
           setCodexElementEnabled(true);
           setCodexElementVisible(true);
           setStyleFile(resolveRuleStyleFile(message.payload, styleProperty));
+        } else {
+          setSelected(null);
+        }
+      }
+      if (message.type === "selected-elements") {
+        const elements = Array.isArray(message.payload?.elements)
+          ? message.payload.elements.filter((element: SelectedElementContext) => Boolean(element?.selector))
+          : [];
+        setSelectedElements(elements);
+        if (elements.length) {
+          setCodexElementEnabled(true);
+          setCodexElementVisible(true);
         }
       }
       if (message.type === "sibling-options") {
@@ -724,6 +748,23 @@ export default function App() {
     });
     return () => cancelAnimationFrame(frame);
   }, [selected?.selector]);
+
+  useEffect(() => {
+    if (!codexElementVisible || !selected?.selector) return;
+    const frame = requestAnimationFrame(() => {
+      const list = codexContextListRef.current;
+      const activeChip = list?.querySelector<HTMLElement>("[data-codex-context-active='true']");
+      if (!list || !activeChip) return;
+      const listBounds = list.getBoundingClientRect();
+      const chipBounds = activeChip.getBoundingClientRect();
+      if (chipBounds.right > listBounds.right) {
+        list.scrollBy({ left: chipBounds.right - listBounds.right + 2, behavior: "smooth" });
+      } else if (chipBounds.left < listBounds.left) {
+        list.scrollBy({ left: chipBounds.left - listBounds.left - 2, behavior: "smooth" });
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [selected?.selector, selectedElements.length, codexElementVisible]);
 
   useEffect(() => {
     if (!siblingPicker) return;
@@ -1071,6 +1112,19 @@ export default function App() {
       {
         source: "web-no-code-editor",
         type: "inspector:clear-selected"
+      },
+      "*"
+    );
+  }
+
+  function removeSelectedElement(selector: string, selectionIndex: number) {
+    setSelectedElements((current) => current.filter((_, index) => index !== selectionIndex));
+    iframeRef.current?.contentWindow?.postMessage(
+      {
+        source: "web-no-code-editor",
+        type: "inspector:remove-selected",
+        selector,
+        selectionIndex
       },
       "*"
     );
@@ -1538,7 +1592,6 @@ export default function App() {
       setCodexWorkspaceMode(draftCodexWorkspaceMode);
       writeCodexSandboxStorage(draftCodexSandbox);
       writeCodexWorkspaceModeStorage(draftCodexWorkspaceMode);
-      closeCodexSettings();
     } catch (error) {
       const message = formatAgentsApiError(error);
       if (saving === "project") setAgentsInstructionsStatus(message);
@@ -1969,7 +2022,12 @@ export default function App() {
     setCodexInput("");
     clearCodexAttachments(attachments);
     closeSkillMenu();
-    const codexSelected = codexElementEnabled && selected ? { ...selected, selector: displaySelector(selected.selector || "") } : null;
+    const codexSelectedElements = codexElementEnabled
+      ? selectedElements.map((element) => ({ ...element, selector: leafSelector(element.selector || "") }))
+      : [];
+    const codexElementSummaries = codexSelectedElements
+      .map(summarizeSelectedElement)
+      .filter((summary): summary is ElementSummary => Boolean(summary));
     const turnPayload = {
       threadId,
       input,
@@ -1978,7 +2036,7 @@ export default function App() {
         path: attachment.path,
         name: attachment.name
       })),
-      selectedElementContext: codexSelected
+      selectedElementContexts: codexSelectedElements
     };
     if (turnBusy && threadId) {
       if (!input.trim() && !attachments.length) {
@@ -1998,12 +2056,12 @@ export default function App() {
       try {
         const result = await steerCodexTurn(turnPayload);
         if (result.steered) {
-          if (codexSelected) {
+          if (codexSelectedElements.length) {
             setCodexElementEnabled(false);
             setCodexElementVisible(false);
           }
           renameCodexTaskFromInput(taskId, input);
-          appendChatMessage("user", formatUserMessage(input, attachments.length), summarizeSelectedElement(codexSelected), taskId);
+          appendChatMessage("user", formatUserMessage(input, attachments.length), codexElementSummaries, taskId);
           appendChatMessage("assistant", "", undefined, taskId);
           return;
         }
@@ -2015,12 +2073,12 @@ export default function App() {
       }
     }
 
-    if (codexSelected) {
+    if (codexSelectedElements.length) {
       setCodexElementEnabled(false);
       setCodexElementVisible(false);
     }
     renameCodexTaskFromInput(taskId, input);
-    appendChatMessage("user", formatUserMessage(input, attachments.length), summarizeSelectedElement(codexSelected), taskId);
+    appendChatMessage("user", formatUserMessage(input, attachments.length), codexElementSummaries, taskId);
     appendChatMessage("assistant", "", undefined, taskId);
     try {
       const thread = await ensureCodexThreadReady(activeCodexTask);
@@ -2093,12 +2151,12 @@ export default function App() {
     console[method](`[web-no-code:${normalizedKind}] ${text}`);
   }
 
-  function appendChatMessage(role: ChatMessage["role"], content: string, element?: ElementSummary | null, taskId = activeCodexTask?.id) {
+  function appendChatMessage(role: ChatMessage["role"], content: string, elements?: ElementSummary[], taskId = activeCodexTask?.id) {
     if (!content.trim() && role !== "assistant") return;
     if (!taskId) return;
     updateCodexTask(taskId, (task) => ({
       ...task,
-      chatMessages: [...task.chatMessages.slice(-30), { id: ++chatId, role, content, element }]
+      chatMessages: [...task.chatMessages.slice(-30), { id: ++chatId, role, content, elements }]
     }));
   }
 
@@ -2371,23 +2429,34 @@ export default function App() {
                 onDrop={handleCodexDrop}
                 onDragOver={handleCodexDragOver}
               >
-                {selected?.selector && codexElementVisible ? (
-                  <div className="codex-context-chip">
-                    <Crosshair size={14} />
-                    <code title={selected.selector}>{selectedElementLabel(selected)}</code>
-                    {selected.text ? <small title={selected.text}>{selected.text}</small> : null}
-                    <button
-                      type="button"
-                      className="icon-button"
-                      onClick={() => {
-                        setCodexElementEnabled(false);
-                        setCodexElementVisible(false);
-                      }}
-                      title="Do not send this element to Codex"
-                      aria-label="Do not send this element to Codex"
-                    >
-                      <X size={13} />
-                    </button>
+                {selectedElements.length > 0 && codexElementVisible ? (
+                  <div
+                    ref={codexContextListRef}
+                    className="codex-context-list"
+                    aria-label={`${selectedElements.length} selected elements for Codex`}
+                  >
+                    {selectedElements.map((element, index) => (
+                      <div
+                        className={element.selector === selected?.selector ? "codex-context-chip active" : "codex-context-chip"}
+                        data-codex-context-active={element.selector === selected?.selector}
+                        key={element.selector}
+                      >
+                        {selectedElements.length > 1 ? (
+                          <span className="codex-context-index" aria-hidden="true">{index + 1}</span>
+                        ) : null}
+                        <code title={element.selector}>{selectedElementLabel(element)}</code>
+                        {selectedElements.length === 1 && element.text ? <small title={element.text}>{element.text}</small> : null}
+                        <button
+                          type="button"
+                          className="icon-button"
+                          onClick={() => removeSelectedElement(element.selector || "", index)}
+                          title={`Remove ${selectedElementLabel(element)} from selection`}
+                          aria-label={`Remove ${selectedElementLabel(element)} from selection`}
+                        >
+                          <X size={13} />
+                        </button>
+                      </div>
+                    ))}
                   </div>
                 ) : null}
                 <textarea
@@ -2756,8 +2825,8 @@ export default function App() {
         <header className="topbar">
           <button
             className={inspectorEnabled || temporaryInspectorMode === "select" ? "icon-button active" : "icon-button"}
-            title="Select element (Ctrl+C, hold Option)"
-            data-tooltip="Select element - Ctrl+C, hold Option"
+            title="Select element (Ctrl+C, Shift+click to add, hold Option)"
+            data-tooltip="Select - Ctrl+C · Shift+click adds"
             aria-keyshortcuts="Control+C"
             onClick={toggleInspectorMode}
           >
@@ -2772,10 +2841,10 @@ export default function App() {
           >
             <Move size={18} />
           </button>
-          <div ref={selectorBreadcrumbRef} className="selected-readout">
+          <div className="selected-readout">
             <Crosshair size={15} />
             {selected?.selector ? (
-              <div className="selector-breadcrumb" aria-label="Selected element path">
+              <div ref={selectorBreadcrumbRef} className="selector-breadcrumb" aria-label="Selected element path">
                 {selectorBreadcrumbs(selected.pathSelector || selected.selector).map((item, index, items) => (
                   <div className="selector-breadcrumb-step" key={item.selector}>
                     {index ? (
@@ -3203,6 +3272,22 @@ function summarizeSelectedElement(selected: SelectedElementContext | null): Elem
   };
 }
 
+function chatMessageElements(message: ChatMessage) {
+  const elements = Array.isArray(message.elements) ? message.elements.filter(isElementSummary) : [];
+  if (elements.length) return elements;
+  return isElementSummary(message.element) ? [message.element] : [];
+}
+
+function isElementSummary(value: unknown): value is ElementSummary {
+  if (!value || typeof value !== "object") return false;
+  const element = value as Partial<ElementSummary>;
+  return (
+    typeof element.tagName === "string" &&
+    typeof element.selector === "string" &&
+    typeof element.source === "string"
+  );
+}
+
 function shouldShowStyleRule(selected: SelectedElementContext | null, property: string, value: string) {
   const source = selected?.styleSources?.[property];
   const hasSource = Boolean(source?.file || source?.selector);
@@ -3239,11 +3324,8 @@ function isImplicitNoneStyle(property: string) {
 }
 
 function selectedElementLabel(selected: SelectedElementContext) {
-  const selector = selected.selector || "";
-  const leaf = selector.split(" > ").filter(Boolean).at(-1) || "";
-  const compactLeaf = compactSelectorPart(leaf);
   const fallback = selected.tagName || "element";
-  return compactLeaf || fallback;
+  return leafSelector(selected.selector || "") || fallback;
 }
 
 function resolveSourceLocation(root: string, selected: SelectedElementContext | null, property: string) {
