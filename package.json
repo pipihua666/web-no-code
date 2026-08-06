@@ -1,7 +1,7 @@
 {
   "name": "web-no-code",
   "private": true,
-  "version": "0.1.20",
+  "version": "0.1.21",
   "type": "module",
   "scripts": {
     "dev": "concurrently -n server,editor-build,plugin,assets -c cyan,magenta,yellow,blue \"pnpm --dir packages/server dev\" \"pnpm --dir packages/editor dev:build\" \"pnpm --dir packages/vite-inspector-plugin dev\" \"node packages/vite-inspector-plugin/scripts/watch-assets.mjs\"",
