@@ -62,7 +62,7 @@ import {
 import type { CodexModel, RegisteredTarget, TargetAlias, WorkspaceAgentsEvent } from "./api";
 import type { CodexEvent, SelectedElementContext } from "@web-no-code/server/codex/types";
 import { resolveAssetPreviewUrl, resolveBackgroundAssetSource } from "./asset-preview";
-import { displaySelector, leafSelector, selectorBreadcrumbs } from "./selector-path";
+import { displaySelector, lastDisplayedSelectors, leafSelector, selectorBreadcrumbs } from "./selector-path";
 
 const DEFAULT_TARGET = "about:blank";
 const DEFAULT_ROOT = "";
@@ -2023,7 +2023,10 @@ export default function App() {
     clearCodexAttachments(attachments);
     closeSkillMenu();
     const codexSelectedElements = codexElementEnabled
-      ? selectedElements.map((element) => ({ ...element, selector: leafSelector(element.selector || "") }))
+      ? selectedElements.map((element) => ({
+          ...element,
+          selector: lastDisplayedSelectors(element.pathSelector || element.selector || "")
+        }))
       : [];
     const codexElementSummaries = codexSelectedElements
       .map(summarizeSelectedElement)

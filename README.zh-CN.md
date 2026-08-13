@@ -81,7 +81,9 @@ pnpm dev
 
 ### 让 Codex 修改代码
 
-选择一个或多个元素，在 Codex 输入区保留对应的上下文标签，然后描述需要完成的修改。Web No Code 会把每个元素的紧凑末级 selector（例如 `div.relationship-rank-countdown`）和源码位置一起发送给 Codex，完整 DOM 路径仅供编辑器内部使用。移除标签会同时把该元素移出选择。
+选择一个或多个元素，在 Codex 输入区保留对应的上下文标签，然后描述需要完成的修改。Web No Code 会把包含当前元素及其最近两级祖先的紧凑 selector 路径和源码位置一起发送给 Codex；路径不足三级时保留实际存在的一到两级，其余完整 DOM 路径仅供编辑器内部使用。移除标签会同时把该元素移出选择。
+
+Codex 线程启动或恢复时，Web No Code 会将固定的 `WEB_NO_CODE_CONTEXT` 规则作为 Codex developer instructions 传入。它们的优先级高于 user 层上下文，而用户消息只包含当前请求及其选中元素上下文。
 
 发送后，用户消息会按编号保留本轮传给 Codex 的全部已选元素摘要。
 

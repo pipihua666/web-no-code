@@ -81,7 +81,9 @@ For numeric values, use `Arrow Up` and `Arrow Down`. Hold `Shift` to change by `
 
 ### Ask Codex To Make A Change
 
-Select one or more elements, keep their context chips attached in the Codex input, and describe the change. Web No Code sends each element's compact leaf selector, such as `div.relationship-rank-countdown`, together with its source location. Full DOM paths remain internal to the editor. Remove a chip to remove that element from the selection.
+Select one or more elements, keep their context chips attached in the Codex input, and describe the change. Web No Code sends a compact selector path containing the selected element and up to two of its nearest ancestors, together with its source location. Shorter paths keep their available one or two selectors, while the rest of the full DOM path remains internal to the editor. Remove a chip to remove that element from the selection.
+
+When a Codex thread starts or resumes, Web No Code provides its fixed `WEB_NO_CODE_CONTEXT` rules as Codex developer instructions. They take precedence over user-level context, while user messages contain only the current request and its selected-element context.
 
 After sending, the user message keeps a numbered summary of every selected element that was included in that Codex turn.
 

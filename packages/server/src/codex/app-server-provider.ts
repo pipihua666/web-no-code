@@ -61,6 +61,14 @@ type AppThread = {
   lastTurnDurationMs?: number;
 };
 
+const WEB_NO_CODE_INSTRUCTIONS = [
+  "<WEB_NO_CODE_CONTEXT>",
+  "You are editing a local Vite project through Web No Code.",
+  "Make only the source changes needed for the user's request, scoped to selected elements when context is provided.",
+  "Return a concise summary and rely on file changes for the diff. The UI will require user confirmation before applying visible edits.",
+  "</WEB_NO_CODE_CONTEXT>"
+].join("\n");
+
 type PendingTurn = {
   threadId: string;
   turnId?: string;
@@ -227,6 +235,7 @@ export class AppServerProvider implements CodexProvider {
       approvalPolicy: "never",
       sandbox: toCodexSandbox(options.sandbox || "workspace-write"),
       serviceName: "Web No Code",
+      developerInstructions: WEB_NO_CODE_INSTRUCTIONS,
       ephemeral: false
     })) as {
       thread?: {
@@ -285,6 +294,7 @@ export class AppServerProvider implements CodexProvider {
       config: modelConfig(options),
       approvalPolicy: "never",
       sandbox: toCodexSandbox(options.sandbox || "workspace-write"),
+      developerInstructions: WEB_NO_CODE_INSTRUCTIONS,
       excludeTurns: true
     })) as {
       thread?: {
@@ -945,14 +955,7 @@ function asRecord(value: unknown) {
 function buildPrompt(options: RunTurnOptions) {
   const selectedElements = selectedElementContexts(options);
   const context = selectedElements.map(compactSelectedElementContext);
-  const hasSelectedElements = selectedElements.length > 0;
   return [
-    "You are editing a local Vite project through Web No Code.",
-    hasSelectedElements
-      ? "Make only the source changes needed for the user's selected elements request."
-      : "No element is selected, so handle the user's request across the project scope.",
-    "Return a concise summary and rely on file changes for the diff. The UI will require user confirmation before applying visible edits.",
-    "",
     "User request:",
     options.input,
     "",
@@ -961,11 +964,20 @@ function buildPrompt(options: RunTurnOptions) {
   ].join("\n");
 }
 
-function compactSelectedElementContext(selected: SelectedElementContext) {
+export function compactSelectedElementContext(selected: SelectedElementContext) {
   return {
-    selector: selected.selector,
+    selector: compactCodexSelectorPath(selected.selector || selected.pathSelector || ""),
     elementSource: selected.elementSource
   };
+}
+
+export function compactCodexSelectorPath(selector: string) {
+  return selector
+    .split(/\s*>\s*/)
+    .filter(Boolean)
+    .slice(-3)
+    .map((part) => part.replace(/:nth-of-type\(\d+\)/g, ""))
+    .join(" > ");
 }
 
 function selectedElementContexts(options: RunTurnOptions) {

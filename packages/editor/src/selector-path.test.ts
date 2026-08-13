@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { displaySelector, leafSelector, selectorBreadcrumbs } from "./selector-path";
+import { displaySelector, lastDisplayedSelectors, leafSelector, selectorBreadcrumbs } from "./selector-path";
 
 test("keeps the complete selector chain when the selected element has an id", () => {
   const path = "body > #app > main.page > section.content:nth-of-type(2) > #current";
@@ -21,8 +21,15 @@ test("keeps the complete selector chain when the selected element has an id", ()
   assert.equal(displaySelector(path), "body > #app > main.page > section.content > #current");
 });
 
-test("uses only the selected element selector for Codex context", () => {
+test("uses only the selected element selector for compact labels", () => {
   const path = "body > div.container > div.relationship-rank-list > div.relationship-rank-countdown:nth-of-type(2)";
 
   assert.equal(leafSelector(path), "div.relationship-rank-countdown");
+});
+
+test("takes the last three selectors from the element card display", () => {
+  const path = "body > #app > main.page > section.content:nth-of-type(2) > #current";
+
+  assert.equal(lastDisplayedSelectors(path), "main.page > section.content > #current");
+  assert.equal(lastDisplayedSelectors("section.content > #current"), "section.content > #current");
 });

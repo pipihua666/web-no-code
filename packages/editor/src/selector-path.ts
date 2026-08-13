@@ -10,6 +10,10 @@ export function displaySelector(selector: string) {
   return selector.split(" > ").filter(Boolean).map(compactSelectorPart).join(" > ");
 }
 
+export function lastDisplayedSelectors(selector: string, limit = 3) {
+  return displaySelector(selector).split(" > ").filter(Boolean).slice(-limit).join(" > ");
+}
+
 export function leafSelector(selector: string) {
   const leaf = selector.split(" > ").filter(Boolean).at(-1) || "";
   return compactSelectorPart(leaf);
