@@ -2134,15 +2134,26 @@ textarea:focus {
   display: block;
   min-width: 0;
   height: 34px;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
   padding: 0 9px;
   border: 1px solid rgba(24, 33, 31, 0.18);
   border-radius: 6px;
   color: #17211e;
   background: rgba(255, 255, 255, 0.72);
   font: 11px/32px ui-monospace, SFMono-Regular, Menlo, monospace;
-  text-overflow: ellipsis;
   white-space: nowrap;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(24, 33, 31, 0.3) transparent;
+}
+
+.source-file-display::-webkit-scrollbar {
+  height: 4px;
+}
+
+.source-file-display::-webkit-scrollbar-thumb {
+  border-radius: 2px;
+  background: rgba(24, 33, 31, 0.3);
 }
 
 .source-file-display.empty {

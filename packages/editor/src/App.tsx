@@ -233,6 +233,7 @@ export default function App() {
   const codexContextListRef = useRef<HTMLDivElement | null>(null);
   const selectorBreadcrumbRef = useRef<HTMLDivElement | null>(null);
   const siblingPickerRef = useRef<HTMLDivElement | null>(null);
+  const sourceFileDisplayRef = useRef<HTMLElement | null>(null);
   const siblingPickerRequestIdRef = useRef(0);
   const styleInputRefs = useRef<Map<string, HTMLInputElement>>(new Map());
   const styleFocusValueRef = useRef<{ property: string; value: string } | null>(null);
@@ -361,6 +362,17 @@ export default function App() {
     () => resolveSourceLocation(workspaceRoot, selected, styleProperty),
     [workspaceRoot, selected, styleProperty]
   );
+  const displayedStyleFile = formatSourceFileForDisplay(styleFile, workspaceRoot);
+
+  useEffect(() => {
+    const sourceFileDisplay = sourceFileDisplayRef.current;
+    if (!sourceFileDisplay || !cssRulesDrawerOpen) return;
+    const frame = window.requestAnimationFrame(() => {
+      sourceFileDisplay.scrollLeft = sourceFileDisplay.scrollWidth;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [cssRulesDrawerOpen, displayedStyleFile]);
+
   const selectedHidden = normalizeCssValue(selected?.styles?.display || "") === "none";
   const appTitle = targetTitle || DEFAULT_APP_TITLE;
   const selectedCodexModel = useMemo(
@@ -3031,8 +3043,12 @@ export default function App() {
           <label className="source-file-field">
             Source file
             <span className="source-file-control">
-              <code className={styleFile ? "source-file-display" : "source-file-display empty"} title={styleFile || "No source file detected"}>
-                {styleFile || "No source file detected"}
+              <code
+                ref={sourceFileDisplayRef}
+                className={styleFile ? "source-file-display" : "source-file-display empty"}
+                title={displayedStyleFile || "No source file detected"}
+              >
+                {displayedStyleFile || "No source file detected"}
               </code>
               <button
                 className="icon-button"
@@ -3651,6 +3667,16 @@ function sameSourceFile(left: string, right: string) {
 function normalizeSourceFile(file: string) {
   if (file.startsWith("/")) return file;
   return file.replace(/^\/?src\//, "src/");
+}
+
+function formatSourceFileForDisplay(file: string, workspaceRoot: string) {
+  const normalizedFile = file.replace(/\\/g, "/");
+  const normalizedRoot = workspaceRoot.trim().replace(/\\/g, "/").replace(/\/+$/, "");
+  if (!normalizedFile || !normalizedRoot) return normalizedFile;
+  if (normalizedFile === normalizedRoot) return normalizedFile.split("/").at(-1) || normalizedFile;
+  return normalizedFile.startsWith(`${normalizedRoot}/`)
+    ? normalizedFile.slice(normalizedRoot.length + 1)
+    : normalizedFile;
 }
 
 function normalizeCssValue(value: string) {
