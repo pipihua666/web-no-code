@@ -95,6 +95,8 @@ Codex 线程启动或恢复时，Web No Code 会将固定的 `WEB_NO_CODE_CONTEX
 CODEX_BIN=/absolute/path/to/codex pnpm --dir packages/server dev
 ```
 
+如果 Codex 不可用，Web No Code 会返回不可用状态并保持 Vite 服务继续运行；后续状态请求会重新尝试探测。
+
 ### 替换图片
 
 选中 `<img>` 或带有 `background-image` 的元素，然后点击右侧面板中的图片预览。

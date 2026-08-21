@@ -95,6 +95,8 @@ This feature requires a local Codex CLI. If `codex` is not on `PATH`, set `CODEX
 CODEX_BIN=/absolute/path/to/codex pnpm --dir packages/server dev
 ```
 
+If Codex is unavailable, Web No Code reports an unavailable status and keeps the Vite server running. It retries detection on later status requests.
+
 ### Replace An Image
 
 Select an `<img>` or an element with `background-image`, then click its image preview in the right panel.

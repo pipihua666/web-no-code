@@ -105,7 +105,8 @@ export class AppServerProvider implements CodexProvider {
   }
 
   async status(): Promise<ProviderStatus> {
-    if (!this.detectedStatus) {
+    let status = this.detectedStatus;
+    if (!status) {
       if (!this.statusPromise) {
         this.statusPromise = this.detectStatus()
           .then((status) => {
@@ -115,14 +116,19 @@ export class AppServerProvider implements CodexProvider {
             if (status.available) this.detectedStatus = status;
             return status;
           })
+          .catch((error) => ({
+            provider: this.name,
+            mode: "app-server" as const,
+            available: false,
+            reason: error instanceof Error ? error.message : String(error)
+          }))
           .finally(() => {
             this.statusPromise = null;
           });
       }
-      await this.statusPromise;
+      status = await this.statusPromise;
     }
 
-    const status = this.detectedStatus!;
     return status.available
       ? { ...status, reason: this.initialized ? "codex app-server is running" : "codex CLI is available" }
       : status;
