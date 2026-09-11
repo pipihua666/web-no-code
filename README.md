@@ -91,7 +91,7 @@ After sending, the user message keeps a numbered summary of every selected eleme
 
 When a new element is added, the Codex context list automatically scrolls its active chip into view.
 
-Codex tasks are unlimited and can be renamed or deleted. Deleting the last task creates a fresh `New Task`. Task tabs show working, waiting-for-approval, ready, failed, and interrupted states. The composer supports `$` skills and `@` workspace file references. Codex command and file-change approval requests appear inline with Allow, Allow for session, and Deny actions.
+Codex tasks are unlimited and can be renamed or deleted. Deleting the last task creates a fresh `New Task`. Task tabs show working, waiting-for-approval, ready, failed, and interrupted states. The composer supports `$` skills and `@` workspace file references. Settings lets you choose whether Codex runs without approval pauses or asks before commands and file changes; approval requests open an actionable review dialog.
 
 This feature requires a local Codex CLI. If `codex` is not on `PATH`, set `CODEX_BIN`:
 

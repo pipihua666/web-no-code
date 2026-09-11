@@ -2838,6 +2838,26 @@ textarea:focus {
   box-shadow: 0 8px 18px rgba(88, 55, 10, 0.14);
 }
 
+.codex-approval-backdrop {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(16, 23, 22, 0.52);
+  backdrop-filter: blur(3px);
+}
+
+.codex-approval-backdrop .codex-approval-panel {
+  width: min(520px, 100%);
+  max-height: min(640px, calc(100dvh - 40px));
+  overflow: auto;
+  padding: 18px;
+  border: 1px solid rgba(246, 213, 138, 0.55);
+  box-shadow: 0 24px 70px rgba(16, 23, 22, 0.42);
+}
+
 .codex-approval-actions button {
   min-height: 30px;
   padding: 0 9px;

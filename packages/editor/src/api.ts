@@ -88,6 +88,7 @@ export async function startCodexThread(payload: {
   reasoningEffort?: string;
   sandbox?: string;
   workspaceMode?: "shadow" | "direct";
+  approvalPolicy?: "never" | "on-request";
 }) {
   return request("/api/codex/thread", {
     method: "POST",
@@ -103,6 +104,7 @@ export async function resumeCodexThread(payload: {
   reasoningEffort?: string;
   sandbox?: string;
   workspaceMode?: "shadow" | "direct";
+  approvalPolicy?: "never" | "on-request";
 }) {
   return request("/api/codex/thread/resume", {
     method: "POST",

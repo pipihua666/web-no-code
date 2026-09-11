@@ -221,6 +221,7 @@ app.post("/api/codex/thread", async (request, response) => {
         model: request.body.model || undefined,
         reasoningEffort: normalizeOptionalString(request.body.reasoningEffort),
         workspaceMode: request.body.workspaceMode === "direct" ? "direct" : "shadow",
+        approvalPolicy: request.body.approvalPolicy === "on-request" ? "on-request" : "never",
         mode: "app-server"
       })
     );
@@ -238,6 +239,7 @@ app.post("/api/codex/thread/resume", async (request, response) => {
         model: request.body.model || undefined,
         reasoningEffort: normalizeOptionalString(request.body.reasoningEffort),
         workspaceMode: request.body.workspaceMode === "direct" ? "direct" : "shadow",
+        approvalPolicy: request.body.approvalPolicy === "on-request" ? "on-request" : "never",
         mode: "app-server"
       })
     );
@@ -666,10 +668,11 @@ async function readSkillsFromRoot(root: string) {
       const skillPath = join(directory, skillEntry.name);
       const content = await readFile(skillPath, "utf8").catch(() => "");
       if (content) skills.push(parseSkillMarkdown(content, skillPath, dirnameName(directory)));
+      return;
     }
 
     for (const entry of entries) {
-      if (entry.name === ".git" || entry.name === "node_modules") continue;
+      if (entry.name === ".git" || entry.name === ".system" || entry.name === "node_modules") continue;
       if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
       await visit(join(directory, entry.name));
     }

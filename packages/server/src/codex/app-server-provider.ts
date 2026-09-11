@@ -21,6 +21,7 @@ import type {
   ResumeThreadOptions,
   RunTurnOptions,
   SandboxMode,
+  ApprovalPolicy,
   StartThreadOptions,
   SteerTurnResult,
   ThreadHandle,
@@ -52,6 +53,7 @@ type AppThread = {
   reasoningEffort?: string;
   workspaceMode: WorkspaceMode;
   sandbox: SandboxMode;
+  approvalPolicy: ApprovalPolicy;
   shadow: ShadowWorkspace | null;
   codexRoot: string;
   finalMessage: string;
@@ -238,7 +240,7 @@ export class AppServerProvider implements CodexProvider {
       cwd: codexRoot,
       model: options.model || null,
       config: modelConfig(options),
-      approvalPolicy: "on-request",
+      approvalPolicy: options.approvalPolicy || "never",
       sandbox: toCodexSandbox(options.sandbox || "workspace-write"),
       serviceName: "Web No Code",
       developerInstructions: WEB_NO_CODE_INSTRUCTIONS,
@@ -261,6 +263,7 @@ export class AppServerProvider implements CodexProvider {
       reasoningEffort: options.reasoningEffort || undefined,
       workspaceMode,
       sandbox: options.sandbox || "workspace-write",
+      approvalPolicy: options.approvalPolicy || "never",
       shadow,
       codexRoot,
       diff: "",
@@ -281,12 +284,14 @@ export class AppServerProvider implements CodexProvider {
     const requestedModel = options.model || undefined;
     const requestedReasoningEffort = options.reasoningEffort || undefined;
     const requestedSandbox = options.sandbox || "workspace-write";
+    const requestedApprovalPolicy = options.approvalPolicy || "never";
     if (
       existing &&
       existing.cwd === options.cwd &&
       existing.model === requestedModel &&
       existing.reasoningEffort === requestedReasoningEffort &&
-      existing.sandbox === requestedSandbox
+      existing.sandbox === requestedSandbox &&
+      existing.approvalPolicy === requestedApprovalPolicy
     ) {
       return { threadId: existing.threadId, provider: this.name };
     }
@@ -298,7 +303,7 @@ export class AppServerProvider implements CodexProvider {
       cwd: codexRoot,
       model: options.model || null,
       config: modelConfig(options),
-      approvalPolicy: "on-request",
+      approvalPolicy: requestedApprovalPolicy,
       sandbox: toCodexSandbox(options.sandbox || "workspace-write"),
       developerInstructions: WEB_NO_CODE_INSTRUCTIONS,
       excludeTurns: true
@@ -320,6 +325,7 @@ export class AppServerProvider implements CodexProvider {
       reasoningEffort: requestedReasoningEffort,
       workspaceMode,
       sandbox: requestedSandbox,
+      approvalPolicy: requestedApprovalPolicy,
       shadow,
       codexRoot,
       diff: existing?.diff || "",
@@ -379,7 +385,7 @@ export class AppServerProvider implements CodexProvider {
           thread.workspaceMode,
           thread.sandbox
         ),
-        approvalPolicy: "on-request",
+        approvalPolicy: thread.approvalPolicy,
         input: buildTurnInput(options)
       })) as {
         turn?: {
@@ -646,7 +652,29 @@ export class AppServerProvider implements CodexProvider {
 
     if (message.method && message.id != null) {
       if (message.method.includes("requestApproval") || message.method === "applyPatchApproval" || message.method === "execCommandApproval") {
-        this.sink.emit({ type: "approval-request", requestId: message.id, method: message.method, params: message.params });
+        const params = message.params && typeof message.params === "object" ? message.params as Record<string, unknown> : undefined;
+        this.sink.emit({
+          type: "approval-request",
+          requestId: message.id,
+          method: message.method,
+          params,
+          threadId: typeof params?.conversationId === "string" ? params.conversationId : undefined
+        });
+      } else if (message.method === "item/tool/call") {
+        // Dynamic/custom tools are executed by the app-server client. Web No
+        // Code does not register an executor for them, but it must still send
+        // a result for every call so Codex can continue or choose a fallback.
+        this.respondToServerRequest(message.id, {
+          success: false,
+          contentItems: [{
+            type: "inputText",
+            text: "This dynamic tool is not available in the Web No Code editor. Use an available tool or continue without it."
+          }]
+        });
+        this.sink.emit({
+          type: "status",
+          message: "A custom tool was unavailable; Codex received a fallback result"
+        });
       }
       return;
     }

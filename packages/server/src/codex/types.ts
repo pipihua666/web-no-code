@@ -4,6 +4,7 @@ export type ProviderName = "app-server" | "unavailable";
 
 export type SandboxMode = "read-only" | "workspace-write" | "danger-full-access";
 export type WorkspaceMode = "shadow" | "direct";
+export type ApprovalPolicy = "never" | "on-request";
 
 export type SelectedElementContext = {
   tagName?: string;
@@ -50,6 +51,7 @@ export type StartThreadOptions = {
   reasoningEffort?: string;
   mode?: ProviderMode;
   workspaceMode?: WorkspaceMode;
+  approvalPolicy?: ApprovalPolicy;
 };
 
 export type ResumeThreadOptions = StartThreadOptions & {
@@ -168,6 +170,7 @@ export type CodexEvent =
       requestId: number | string;
       method: string;
       params?: unknown;
+      threadId?: string;
     };
 
 export interface CodexProvider {

@@ -77,6 +77,7 @@ const DEFAULT_ROOT = "";
 const DEFAULT_APP_TITLE = "Web No Code";
 const CODEX_SANDBOX_STORAGE_KEY = "web-no-code-codex-sandbox-v2";
 const CODEX_WORKSPACE_MODE_STORAGE_KEY = "web-no-code-codex-workspace-mode-v2";
+const CODEX_APPROVAL_POLICY_STORAGE_KEY = "web-no-code-codex-approval-policy-v1";
 const CODEX_MODEL_STORAGE_KEY = "web-no-code-codex-model-v1";
 const CODEX_REASONING_EFFORT_STORAGE_KEY = "web-no-code-codex-reasoning-effort-v1";
 const CODEX_SESSION_STORAGE_KEY = "web-no-code-codex-session-v1";
@@ -177,6 +178,7 @@ type CodexSessionSnapshot = {
 type LeftView = "setup" | "codex";
 type CodexSandbox = "workspace-write" | "danger-full-access";
 type CodexWorkspaceMode = "shadow" | "direct";
+type CodexApprovalPolicy = "never" | "on-request";
 
 let chatId = 0;
 let previewQueryParamId = 0;
@@ -345,8 +347,10 @@ export default function App() {
   const [globalAgentsInstructionsStatus, setGlobalAgentsInstructionsStatus] = useState("Not loaded");
   const [codexSandbox, setCodexSandbox] = useState<CodexSandbox>(readCodexSandboxStorage);
   const [codexWorkspaceMode, setCodexWorkspaceMode] = useState<CodexWorkspaceMode>(readCodexWorkspaceModeStorage);
+  const [codexApprovalPolicy, setCodexApprovalPolicy] = useState<CodexApprovalPolicy>(readCodexApprovalPolicyStorage);
   const [draftCodexSandbox, setDraftCodexSandbox] = useState<CodexSandbox>(readCodexSandboxStorage);
   const [draftCodexWorkspaceMode, setDraftCodexWorkspaceMode] = useState<CodexWorkspaceMode>(readCodexWorkspaceModeStorage);
+  const [draftCodexApprovalPolicy, setDraftCodexApprovalPolicy] = useState<CodexApprovalPolicy>(readCodexApprovalPolicyStorage);
   const [codexModel, setCodexModel] = useState(readCodexModelStorage);
   const [codexReasoningEffort, setCodexReasoningEffort] = useState(readCodexReasoningEffortStorage);
   const [codexModels, setCodexModels] = useState<CodexModel[]>([]);
@@ -400,6 +404,7 @@ export default function App() {
   const codexSettingsDirty =
     draftCodexSandbox !== codexSandbox ||
     draftCodexWorkspaceMode !== codexWorkspaceMode ||
+    draftCodexApprovalPolicy !== codexApprovalPolicy ||
     draftAgentsInstructions !== agentsInstructions ||
     draftGlobalAgentsInstructions !== globalAgentsInstructions;
   const projectAgentsStats = useMemo(() => getDocumentStats(draftAgentsInstructions), [draftAgentsInstructions]);
@@ -1103,7 +1108,14 @@ export default function App() {
     if (!pendingApproval) return;
     const request = pendingApproval;
     try {
-      await respondCodexApproval(request.requestId, { decision });
+      const result = decision === "accept"
+        ? { decision: "approved" }
+        : decision === "acceptForSession"
+          ? { decision: "approved_for_session" }
+          : decision === "cancel"
+            ? { decision: "abort" }
+            : { decision: { denied: { rejection: "Denied by user" } } };
+      await respondCodexApproval(request.requestId, result);
       if (request.taskId) updateCodexTask(request.taskId, (task) => ({ ...task, status: decision === "decline" || decision === "cancel" ? "interrupted" : "working" }));
       addLog("status", decision === "decline" || decision === "cancel" ? "Codex approval declined" : "Codex approval granted");
     } catch (error) {
@@ -1802,6 +1814,7 @@ export default function App() {
   function openCodexSettings() {
     setDraftCodexSandbox(codexSandbox);
     setDraftCodexWorkspaceMode(codexWorkspaceMode);
+    setDraftCodexApprovalPolicy(codexApprovalPolicy);
     draftAgentsInstructionsRef.current = agentsInstructionsRef.current;
     setDraftAgentsInstructions(agentsInstructionsRef.current);
     draftGlobalAgentsInstructionsRef.current = globalAgentsInstructionsRef.current;
@@ -1840,8 +1853,10 @@ export default function App() {
       saving = "settings";
       setCodexSandbox(draftCodexSandbox);
       setCodexWorkspaceMode(draftCodexWorkspaceMode);
+      setCodexApprovalPolicy(draftCodexApprovalPolicy);
       writeCodexSandboxStorage(draftCodexSandbox);
       writeCodexWorkspaceModeStorage(draftCodexWorkspaceMode);
+      writeCodexApprovalPolicyStorage(draftCodexApprovalPolicy);
     } catch (error) {
       const message = formatAgentsApiError(error);
       if (saving === "project") setAgentsInstructionsStatus(message);
@@ -1858,6 +1873,7 @@ export default function App() {
     setDraftGlobalAgentsInstructions(globalAgentsInstructionsRef.current);
     setDraftCodexSandbox(codexSandbox);
     setDraftCodexWorkspaceMode(codexWorkspaceMode);
+    setDraftCodexApprovalPolicy(codexApprovalPolicy);
     setAgentsViewerMode(null);
     setCodexSettingsOpen(false);
   }
@@ -2385,7 +2401,8 @@ export default function App() {
       model: codexModel || undefined,
       reasoningEffort: codexReasoningEffort || undefined,
       sandbox: codexSandbox,
-      workspaceMode: codexWorkspaceMode
+      workspaceMode: codexWorkspaceMode,
+      approvalPolicy: codexApprovalPolicy
     };
     if (!task.threadId) {
       return (await startCodexThread(threadOptions)).threadId;
@@ -2739,18 +2756,22 @@ export default function App() {
                   <div className="chat-empty">Codex responses will stream here.</div>
                 )}
               </div>
-              {pendingApproval ? (
-                <section className="codex-approval-panel" aria-label="Codex approval request">
-                  <div className="codex-approval-heading"><strong>Approval required</strong><span>{pendingApproval.method}</span></div>
-                  {typeof pendingApproval.params.command === "string" ? <code>{pendingApproval.params.command}</code> : null}
-                  {typeof pendingApproval.params.cwd === "string" ? <small>cwd: {pendingApproval.params.cwd}</small> : null}
-                  {typeof pendingApproval.params.reason === "string" ? <p>{pendingApproval.params.reason}</p> : null}
-                  <div className="codex-approval-actions">
-                    <button type="button" onClick={() => void resolvePendingApproval("accept")}><Check size={14} />Allow</button>
-                    {pendingApproval.method.includes("commandExecution") ? <button type="button" onClick={() => void resolvePendingApproval("acceptForSession")}><Check size={14} />Allow for session</button> : null}
-                    <button type="button" className="ghost" onClick={() => void resolvePendingApproval("decline")}><X size={14} />Deny</button>
-                  </div>
-                </section>
+              {pendingApproval ? createPortal(
+                <div className="codex-approval-backdrop" role="presentation">
+                  <section className="codex-approval-panel" role="dialog" aria-modal="true" aria-label="Codex approval request">
+                    <div className="codex-approval-heading"><strong>Approval required</strong><span>{formatApprovalMethod(pendingApproval.method)}</span></div>
+                    <p>Codex is waiting before it continues this task.</p>
+                    <code>{formatApprovalRequest(pendingApproval.params)}</code>
+                    {typeof pendingApproval.params.cwd === "string" ? <small>cwd: {pendingApproval.params.cwd}</small> : null}
+                    {typeof pendingApproval.params.reason === "string" ? <p>{pendingApproval.params.reason}</p> : null}
+                    <div className="codex-approval-actions">
+                      <button type="button" onClick={() => void resolvePendingApproval("accept")}><Check size={14} />Allow</button>
+                      {pendingApproval.method.includes("commandExecution") || pendingApproval.method === "execCommandApproval" ? <button type="button" onClick={() => void resolvePendingApproval("acceptForSession")}><Check size={14} />Allow for session</button> : null}
+                      <button type="button" className="ghost" onClick={() => void resolvePendingApproval("decline")}><X size={14} />Deny</button>
+                    </div>
+                  </section>
+                </div>,
+                document.body
               ) : null}
               <div
                 className="codex-input-wrap"
@@ -2999,6 +3020,17 @@ export default function App() {
                         <option value="danger-full-access">Danger full access</option>
                         <option value="workspace-write">Workspace write</option>
                       </select>
+                    </label>
+                    <label className="codex-settings-field">
+                      Approval policy
+                      <select
+                        value={draftCodexApprovalPolicy}
+                        onChange={(event) => setDraftCodexApprovalPolicy(event.target.value === "on-request" ? "on-request" : "never")}
+                      >
+                        <option value="never">Never ask — fastest</option>
+                        <option value="on-request">Ask before commands and file changes</option>
+                      </select>
+                      <small>Changing this setting takes effect on the next message for each task.</small>
                     </label>
                     <section className="agents-document agents-document-global" aria-labelledby="global-agents-title">
                       <div className="agents-document-header">
@@ -4307,6 +4339,47 @@ function writeCodexWorkspaceModeStorage(value: CodexWorkspaceMode) {
     window.localStorage.setItem(CODEX_WORKSPACE_MODE_STORAGE_KEY, value);
   } catch {
     // Local storage can be unavailable in locked-down browser contexts.
+  }
+}
+
+function readCodexApprovalPolicyStorage(): CodexApprovalPolicy {
+  try {
+    return window.localStorage.getItem(CODEX_APPROVAL_POLICY_STORAGE_KEY) === "on-request" ? "on-request" : "never";
+  } catch {
+    return "never";
+  }
+}
+
+function writeCodexApprovalPolicyStorage(value: CodexApprovalPolicy) {
+  try {
+    window.localStorage.setItem(CODEX_APPROVAL_POLICY_STORAGE_KEY, value);
+  } catch {
+    // Local storage can be unavailable in locked-down browser contexts.
+  }
+}
+
+function formatApprovalMethod(method: string) {
+  if (method.includes("fileChange") || method === "applyPatchApproval") return "File change";
+  if (method.includes("command") || method === "execCommandApproval") return "Command";
+  if (method.includes("permissions")) return "Permission";
+  return "Action";
+}
+
+function formatApprovalRequest(params: Record<string, unknown>) {
+  if (typeof params.command === "string") return params.command;
+  if (Array.isArray(params.changes)) {
+    return params.changes.map((change) => {
+      if (!change || typeof change !== "object") return String(change);
+      const entry = change as Record<string, unknown>;
+      const path = typeof entry.path === "string" ? entry.path : typeof entry.file === "string" ? entry.file : "file";
+      const kind = typeof entry.kind === "string" ? entry.kind : typeof entry.type === "string" ? entry.type : "change";
+      return `${kind}: ${path}`;
+    }).join("\n") || "File change requested";
+  }
+  try {
+    return JSON.stringify(params, null, 2).slice(0, 4_000) || "Approval requested";
+  } catch {
+    return "Approval requested";
   }
 }
 

@@ -91,7 +91,7 @@ Codex 线程启动或恢复时，Web No Code 会将固定的 `WEB_NO_CODE_CONTEX
 
 新增元素后，Codex 上下文列表会自动滚动并显示新激活的标签。
 
-Codex 任务数量不受限制，并支持重命名和删除；删除最后一个任务时会自动创建新的 `New Task`。任务标签会显示 working、waiting-for-approval、ready、failed 和 interrupted 状态。输入区支持 `$` skill 和 `@` 工作区文件引用。Codex 请求执行命令或文件修改审批时，会在输入区显示 Allow、Allow for session 和 Deny 操作。
+Codex 任务数量不受限制，并支持重命名和删除；删除最后一个任务时会自动创建新的 `New Task`。任务标签会显示 working、waiting-for-approval、ready、failed 和 interrupted 状态。输入区支持 `$` skill 和 `@` 工作区文件引用。可在 Settings 中选择 Codex 是否跳过审批，或在执行命令和文件修改前请求审批；审批请求会弹出可操作的审核对话框。
 
 该功能需要本机安装 Codex CLI。如果 `codex` 不在 `PATH` 中，可以设置 `CODEX_BIN`：
 
