@@ -16,6 +16,8 @@ Web No Code connects the page back to those source files. Select an element once
 
 After you add the plugin and start your project, it automatically opens a local editor containing your page.
 
+The editor remains scrollable and interactive when Chrome DevTools is docked and reduces the viewport to a narrow width.
+
 ![Web No Code visual editor with element selection, Codex editing, and CSS rules](./image.png)
 
 ## Quick Start
@@ -89,6 +91,8 @@ After sending, the user message keeps a numbered summary of every selected eleme
 
 When a new element is added, the Codex context list automatically scrolls its active chip into view.
 
+Codex tasks are unlimited and can be renamed or deleted. Deleting the last task creates a fresh `New Task`. Task tabs show working, waiting-for-approval, ready, failed, and interrupted states. The composer supports `$` skills and `@` workspace file references. Codex command and file-change approval requests appear inline with Allow, Allow for session, and Deny actions.
+
 This feature requires a local Codex CLI. If `codex` is not on `PATH`, set `CODEX_BIN`:
 
 ```bash
@@ -106,7 +110,7 @@ Select an `<img>` or an element with `background-image`, then click its image pr
 
 ### Change The Preview Page
 
-Edit the URL above the preview and press `Enter`. Use the parameter button to edit long query parameters separately, or use the refresh button to reload the current page.
+Edit the URL above the preview and press `Enter`. Use the URL settings button to edit the protocol, credentials, host, port, path, query parameters, and hash separately, or use the refresh button to reload the current page.
 
 ## Common Controls
 

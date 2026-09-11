@@ -162,6 +162,12 @@ export type CodexEvent =
       turnId?: string;
       method: string;
       params?: unknown;
+    }
+  | {
+      type: "approval-request";
+      requestId: number | string;
+      method: string;
+      params?: unknown;
     };
 
 export interface CodexProvider {
@@ -175,6 +181,7 @@ export interface CodexProvider {
   getTurnStatus(threadId: string): CodexTurnStatus;
   interrupt(threadId: string): Promise<void>;
   getDiff(threadId: string): Promise<string>;
+  respondToServerRequest?(requestId: number | string, result: unknown): void;
   dispose(): Promise<void>;
 }
 

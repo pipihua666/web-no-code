@@ -778,7 +778,6 @@ const MAX_SELECTED_ELEMENTS = 8;
 const STATE = {
   enabled: false,
   temporaryMode: null,
-  dragEnabled: false,
   hover: null,
   selected: null,
   selectedElements: [],
@@ -885,7 +884,6 @@ function handleMessage(event) {
   if (message.source !== "web-no-code-editor") return;
   if (message.type === "inspector:set-enabled") {
     STATE.enabled = !!message.enabled;
-    STATE.dragEnabled = !!message.dragEnabled;
     STATE.temporaryMode = message.temporaryMode === "select" || message.temporaryMode === "drag"
       ? message.temporaryMode
       : null;
@@ -991,10 +989,10 @@ function handleKeyDown(event) {
   if (isTypingTarget(event.target)) return;
   if (event.ctrlKey && !event.metaKey) {
     const key = event.key.toLowerCase();
-    if (key === "c" || key === "d" || key === "s") {
+    if (key === "c" || key === "s") {
       event.preventDefault();
       event.stopPropagation();
-      post("shortcut", { shortcut: key === "c" ? "select" : key === "d" ? "drag" : "open-source" });
+      post("shortcut", { shortcut: key === "c" ? "select" : "open-source" });
       return;
     }
   }
@@ -1465,7 +1463,7 @@ function isInspectorActive() {
 }
 
 function isDragActive() {
-  return STATE.dragEnabled || STATE.temporaryMode === "drag";
+  return false;
 }
 
 function drawOverlay(element, selected) {

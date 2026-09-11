@@ -86,6 +86,16 @@ export class CodexBridge {
     return await provider.getDiff(threadId);
   }
 
+  respondToServerRequest(requestId: number | string, result: unknown) {
+    for (const provider of this.threadProviders.values()) {
+      if (provider.respondToServerRequest) {
+        provider.respondToServerRequest(requestId, result);
+        return;
+      }
+    }
+    throw new Error(`No provider available for request ${requestId}`);
+  }
+
   async steerTurn(options: RunTurnOptions) {
     const provider = this.threadProviders.get(options.threadId);
     if (!provider) {

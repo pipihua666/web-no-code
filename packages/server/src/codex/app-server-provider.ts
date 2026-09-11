@@ -29,7 +29,7 @@ import type {
 } from "./types";
 
 type JsonRpcMessage = {
-  id?: number;
+  id?: number | string;
   method?: string;
   params?: unknown;
   result?: unknown;
@@ -93,7 +93,7 @@ export class AppServerProvider implements CodexProvider {
   private startPromise: Promise<void> | null = null;
   private statusPromise: Promise<ProviderStatus> | null = null;
   private detectedStatus: ProviderStatus | null = null;
-  private readonly pending = new Map<number, PendingRequest>();
+  private readonly pending = new Map<number | string, PendingRequest>();
   private readonly pendingTurns = new Map<string, PendingTurn>();
   private readonly threads = new Map<string, AppThread>();
   private readonly sink: EventSink;
@@ -238,7 +238,7 @@ export class AppServerProvider implements CodexProvider {
       cwd: codexRoot,
       model: options.model || null,
       config: modelConfig(options),
-      approvalPolicy: "never",
+      approvalPolicy: "on-request",
       sandbox: toCodexSandbox(options.sandbox || "workspace-write"),
       serviceName: "Web No Code",
       developerInstructions: WEB_NO_CODE_INSTRUCTIONS,
@@ -298,7 +298,7 @@ export class AppServerProvider implements CodexProvider {
       cwd: codexRoot,
       model: options.model || null,
       config: modelConfig(options),
-      approvalPolicy: "never",
+      approvalPolicy: "on-request",
       sandbox: toCodexSandbox(options.sandbox || "workspace-write"),
       developerInstructions: WEB_NO_CODE_INSTRUCTIONS,
       excludeTurns: true
@@ -379,7 +379,7 @@ export class AppServerProvider implements CodexProvider {
           thread.workspaceMode,
           thread.sandbox
         ),
-        approvalPolicy: "never",
+        approvalPolicy: "on-request",
         input: buildTurnInput(options)
       })) as {
         turn?: {
@@ -644,7 +644,13 @@ export class AppServerProvider implements CodexProvider {
       return;
     }
 
-    if (typeof message.id === "number") {
+    if (message.method && message.id != null) {
+      if (message.method.includes("requestApproval") || message.method === "applyPatchApproval" || message.method === "execCommandApproval") {
+        this.sink.emit({ type: "approval-request", requestId: message.id, method: message.method, params: message.params });
+      }
+      return;
+    }
+    if (message.id != null) {
       const pending = this.pending.get(message.id);
       if (pending) {
         clearTimeout(pending.timer);
@@ -661,6 +667,10 @@ export class AppServerProvider implements CodexProvider {
     if (message.method) {
       this.handleNotification(message.method, message.params as Record<string, unknown> | undefined);
     }
+  }
+
+  respondToServerRequest(requestId: number | string, result: unknown) {
+    this.process?.stdin.write(`${JSON.stringify({ id: requestId, result })}\n`);
   }
 
   private handleNotification(method: string, params: Record<string, unknown> | undefined) {

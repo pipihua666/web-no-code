@@ -16,6 +16,8 @@ Web No Code 把页面和这些源码连接起来。选中元素后，你可以�
 
 接入插件并启动业务项目后，它会自动打开一个本地编辑器，并在其中加载当前页面。
 
+即使 Chrome DevTools 停靠后把视口缩窄，编辑器仍可正常滚动和操作。
+
 ![Web No Code 可视化编辑器，包含元素选择、Codex 编辑和 CSS 规则面板](./image.png)
 
 ## 快速开始
@@ -89,6 +91,8 @@ Codex 线程启动或恢复时，Web No Code 会将固定的 `WEB_NO_CODE_CONTEX
 
 新增元素后，Codex 上下文列表会自动滚动并显示新激活的标签。
 
+Codex 任务数量不受限制，并支持重命名和删除；删除最后一个任务时会自动创建新的 `New Task`。任务标签会显示 working、waiting-for-approval、ready、failed 和 interrupted 状态。输入区支持 `$` skill 和 `@` 工作区文件引用。Codex 请求执行命令或文件修改审批时，会在输入区显示 Allow、Allow for session 和 Deny 操作。
+
 该功能需要本机安装 Codex CLI。如果 `codex` 不在 `PATH` 中，可以设置 `CODEX_BIN`：
 
 ```bash
@@ -106,7 +110,7 @@ CODEX_BIN=/absolute/path/to/codex pnpm --dir packages/server dev
 
 ### 切换预览页面
 
-修改预览区域上方的 URL，然后按 `Enter`。查询参数过长时，可以点击参数按钮单独修改；点击刷新按钮可以重新加载当前页面。
+修改预览区域上方的 URL，然后按 `Enter`。点击 URL 设置按钮可以分别编辑协议、认证信息、主机、端口、路径、查询参数和 hash；点击刷新按钮可以重新加载当前页面。
 
 ## 常用操作
 

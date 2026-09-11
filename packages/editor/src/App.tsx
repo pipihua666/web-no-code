@@ -4,6 +4,7 @@ import {
   ChevronDown,
   ChevronRight,
   Code2,
+  Copy,
   Crosshair,
   X,
   Eye,
@@ -15,7 +16,7 @@ import {
   Maximize2,
   Monitor,
   MousePointer2,
-  Move,
+  Pencil,
   Plus,
   RefreshCw,
   Save,
@@ -25,6 +26,8 @@ import {
   Sparkles,
   SquareCode,
   Trash2,
+  Undo2,
+  Redo2,
 } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -43,6 +46,10 @@ import {
   applyStylePatch,
   applyTextPatch,
   createEventStream,
+  getWorkspaceFiles,
+  getWorkspaceHistory,
+  redoWorkspace,
+  undoWorkspace,
   getCodexModels,
   getCodexStatus,
   getCodexSkills,
@@ -58,6 +65,7 @@ import {
   updateWorkspaceAgents,
   replaceAsset,
   uploadCodexAttachment,
+  respondCodexApproval,
 } from "./api";
 import type { CodexModel, RegisteredTarget, TargetAlias, WorkspaceAgentsEvent } from "./api";
 import type { CodexEvent, SelectedElementContext } from "@web-no-code/server/codex/types";
@@ -74,7 +82,6 @@ const CODEX_REASONING_EFFORT_STORAGE_KEY = "web-no-code-codex-reasoning-effort-v
 const CODEX_SESSION_STORAGE_KEY = "web-no-code-codex-session-v1";
 const EDITOR_TARGET_STORAGE_KEY = "web-no-code-editor-target-root";
 const SMALL_SCREEN_MEDIA_QUERY = "(max-width: 1299px)";
-const MAX_CODEX_TASKS = 3;
 const CODEX_SEND_DEBOUNCE_MS = 400;
 const CODEX_RECOVERY_POLL_INTERVAL_MS = 10_000;
 const CODEX_SESSION_WRITE_DEBOUNCE_MS = 750;
@@ -106,6 +113,7 @@ type CodexSkill = {
   description: string;
   path: string;
 };
+type CodexMenuEntry = { name: string; description: string; path?: string };
 
 type CodexAttachment = {
   id: string;
@@ -119,6 +127,16 @@ type PreviewQueryParam = {
   id: string;
   key: string;
   value: string;
+};
+
+type PreviewUrlSettings = {
+  protocol: string;
+  username: string;
+  password: string;
+  hostname: string;
+  port: string;
+  pathname: string;
+  hash: string;
 };
 
 type SiblingOption = {
@@ -145,6 +163,7 @@ type CodexTask = {
   attachments: CodexAttachment[];
   chatMessages: ChatMessage[];
   busy: boolean;
+  status?: "new" | "working" | "waiting-approval" | "ready" | "failed" | "interrupted";
   turnStartedAt?: number;
   createdAt: number;
   updatedAt: number;
@@ -165,11 +184,19 @@ let previewQueryParamId = 0;
 const CodexChatMessageView = memo(function CodexChatMessageView({
   message,
   streaming,
-  activityElapsedMs
+  activityElapsedMs,
+  onCopy,
+  onEdit,
+  onRetry,
+  onContinue
 }: {
   message: ChatMessage;
   streaming: boolean;
   activityElapsedMs: number;
+  onCopy?: (message: ChatMessage) => void;
+  onEdit?: (message: ChatMessage) => void;
+  onRetry?: (message: ChatMessage) => void;
+  onContinue?: (message: ChatMessage) => void;
 }) {
   const elements = chatMessageElements(message);
   const activity = streaming ? (
@@ -184,6 +211,27 @@ const CodexChatMessageView = memo(function CodexChatMessageView({
       <div className="chat-message-meta">
         <span>{message.role === "user" ? "You" : "Codex"}</span>
         {message.elapsedMs != null ? <small>{formatElapsedTime(message.elapsedMs)}</small> : null}
+        {!streaming && message.content ? (
+          <span className="chat-message-actions">
+            <button type="button" onClick={() => onCopy?.(message)} title="Copy message" aria-label="Copy message">
+              <Copy size={12} />
+            </button>
+            {message.role === "user" ? (
+              <button type="button" onClick={() => onEdit?.(message)} title="Edit and resend" aria-label="Edit and resend">
+                <Pencil size={12} />
+              </button>
+            ) : (
+              <>
+                <button type="button" onClick={() => onRetry?.(message)} title="Retry response" aria-label="Retry response">
+                  <RefreshCw size={12} />
+                </button>
+                <button type="button" onClick={() => onContinue?.(message)} title="Continue" aria-label="Continue">
+                  <ChevronRight size={12} />
+                </button>
+              </>
+            )}
+          </span>
+        ) : null}
       </div>
       {elements.length ? (
         <div className="chat-element-summaries" aria-label={`${elements.length} selected element${elements.length === 1 ? "" : "s"}`}>
@@ -224,6 +272,7 @@ export default function App() {
   const editorTargetRootRef = useRef(readEditorTargetRootStorage());
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const codexFileInputRef = useRef<HTMLInputElement | null>(null);
+  const codexInputRef = useRef<HTMLTextAreaElement | null>(null);
   const chatPanelRef = useRef<HTMLDivElement | null>(null);
   const codexTaskListRef = useRef<HTMLDivElement | null>(null);
   const codexTaskTabRefs = useRef<Map<string, HTMLDivElement>>(new Map());
@@ -263,9 +312,10 @@ export default function App() {
   const [previewUrlInput, setPreviewUrlInput] = useState(DEFAULT_TARGET);
   const [previewQueryEditor, setPreviewQueryEditor] = useState<{
     open: boolean;
+    url: PreviewUrlSettings;
     params: PreviewQueryParam[];
     error: string;
-  }>({ open: false, params: [], error: "" });
+  }>({ open: false, url: emptyPreviewUrlSettings(), params: [], error: "" });
   const [targetTitle, setTargetTitle] = useState("");
   const [workspaceRoot, setWorkspaceRoot] = useState(DEFAULT_ROOT);
   const [targetAliases, setTargetAliases] = useState<TargetAlias[]>([]);
@@ -274,8 +324,7 @@ export default function App() {
   const [providerName, setProviderName] = useState("app-server");
   const [leftView, setLeftView] = useState<LeftView>("codex");
   const [inspectorEnabled, setInspectorEnabled] = useState(false);
-  const [temporaryInspectorMode, setTemporaryInspectorMode] = useState<"select" | "drag" | null>(null);
-  const [dragEnabled, setDragEnabled] = useState(false);
+  const [temporaryInspectorMode, setTemporaryInspectorMode] = useState<"select" | null>(null);
   const [selected, setSelected] = useState<SelectedElementContext | null>(null);
   const [selectedElements, setSelectedElements] = useState<SelectedElementContext[]>([]);
   const [siblingPicker, setSiblingPicker] = useState<SiblingPickerState | null>(null);
@@ -313,10 +362,20 @@ export default function App() {
   const [skillMenuOpen, setSkillMenuOpen] = useState(false);
   const [skillQuery, setSkillQuery] = useState("");
   const [skillTriggerStart, setSkillTriggerStart] = useState<number | null>(null);
+  const [skillTrigger, setSkillTrigger] = useState<"$" | "@">("$");
+  const [workspaceFiles, setWorkspaceFiles] = useState<string[]>([]);
+  const [historyState, setHistoryState] = useState<{ canUndo: boolean; canRedo: boolean }>({ canUndo: false, canRedo: false });
   const [skillActiveIndex, setSkillActiveIndex] = useState(0);
   const [codexPasteStatus, setCodexPasteStatus] = useState("");
   const [codexActivityNow, setCodexActivityNow] = useState(Date.now());
   const [pendingDeleteCodexTaskId, setPendingDeleteCodexTaskId] = useState("");
+  const [editingCodexTask, setEditingCodexTask] = useState<{ id: string; title: string } | null>(null);
+  const [pendingApproval, setPendingApproval] = useState<{
+    requestId: number | string;
+    method: string;
+    params: Record<string, unknown>;
+    taskId?: string;
+  } | null>(null);
   const [assetPreviewVersion, setAssetPreviewVersion] = useState(0);
   const [imageUrlDialog, setImageUrlDialog] = useState<{ open: boolean; value: string; error: string }>({
     open: false,
@@ -335,7 +394,6 @@ export default function App() {
   const codexActivityElapsedMs = busy && activeCodexTask
     ? Math.max(0, codexActivityNow - (activeCodexTask.turnStartedAt || codexActivityNow))
     : 0;
-  const canCreateCodexTask = codexTasks.length < MAX_CODEX_TASKS;
   const pendingDeleteCodexTask = pendingDeleteCodexTaskId
     ? codexTasks.find((task) => task.id === pendingDeleteCodexTaskId) || null
     : null;
@@ -442,6 +500,8 @@ export default function App() {
 
   useEffect(() => {
     workspaceRootRef.current = workspaceRoot;
+    setWorkspaceFiles([]);
+    setHistoryState({ canUndo: false, canRedo: false });
     agentsInstructionsRef.current = "";
     draftAgentsInstructionsRef.current = "";
     globalAgentsInstructionsRef.current = "";
@@ -453,6 +513,7 @@ export default function App() {
     setAgentsInstructionsStatus(workspaceRoot ? "Loading AGENTS.md..." : "No project workspace available");
     setGlobalAgentsInstructionsStatus(workspaceRoot ? "Loading global rules..." : "Not loaded");
     if (workspaceRoot) void refreshAgentsInstructions(workspaceRoot);
+    if (workspaceRoot) void refreshHistoryState();
   }, [workspaceRoot]);
 
   useEffect(() => {
@@ -651,7 +712,7 @@ export default function App() {
 
   useEffect(() => {
     postInspectorState();
-  }, [inspectorEnabled, temporaryInspectorMode, dragEnabled, loadedUrl]);
+  }, [inspectorEnabled, temporaryInspectorMode, loadedUrl]);
 
   useEffect(() => {
     if (!selected) return;
@@ -748,6 +809,7 @@ export default function App() {
     updateCodexTask(taskId, (task) => ({
       ...task,
       busy: value,
+      status: value ? "working" : (task.status === "waiting-approval" ? "ready" : task.status || "ready"),
       turnStartedAt: value ? startedAt || task.turnStartedAt || Date.now() : undefined
     }));
   }
@@ -820,18 +882,13 @@ export default function App() {
         toggleInspectorMode();
         return;
       }
-      if (isDragShortcut(event)) {
-        event.preventDefault();
-        toggleDragMode();
-        return;
-      }
       if ((sourceLocation || workspaceRoot) && isOpenSourceShortcut(event)) {
         event.preventDefault();
         handleOpenSource();
         return;
       }
       const temporaryMode = temporaryInspectorModeFromEvent(event);
-      if (temporaryMode && !inspectorEnabled && !dragEnabled) {
+      if (temporaryMode && !inspectorEnabled) {
         setTemporaryInspectorMode(temporaryMode);
       }
     };
@@ -856,7 +913,7 @@ export default function App() {
       window.removeEventListener("blur", onBlur);
       window.clearTimeout(blurTimer);
     };
-  }, [codexModelPickerOpen, codexSettingsOpen, dragEnabled, inspectorEnabled, previewQueryEditor.open, sourceLocation, workspaceRoot]);
+  }, [codexInput, codexModelPickerOpen, codexSettingsOpen, inspectorEnabled, previewQueryEditor.open, sourceLocation, workspaceRoot]);
 
   useEffect(() => {
     if (!codexModelPickerOpen) return;
@@ -947,6 +1004,38 @@ export default function App() {
     }
   }
 
+  async function ensureWorkspaceFilesLoaded() {
+    if (workspaceFiles.length || !workspaceRoot) return;
+    try {
+      const result = await getWorkspaceFiles(workspaceRoot);
+      setWorkspaceFiles(result.files);
+    } catch (error) {
+      addLog("error", error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function refreshHistoryState() {
+    if (!workspaceRoot) return;
+    try {
+      const state = await getWorkspaceHistory(workspaceRoot);
+      setHistoryState({ canUndo: state.canUndo, canRedo: state.canRedo });
+    } catch {
+      setHistoryState({ canUndo: false, canRedo: false });
+    }
+  }
+
+  async function runWorkspaceHistoryAction(direction: "undo" | "redo") {
+    if (!workspaceRoot || !(direction === "undo" ? historyState.canUndo : historyState.canRedo)) return;
+    try {
+      const result = direction === "undo" ? await undoWorkspace(workspaceRoot) : await redoWorkspace(workspaceRoot);
+      setHistoryState({ canUndo: result.canUndo, canRedo: result.canRedo });
+      addLog("status", `${direction === "undo" ? "Undid" : "Redid"} ${result.changedFiles?.length || 0} file change(s)`);
+      reloadTarget(true);
+    } catch (error) {
+      addLog("error", error instanceof Error ? error.message : String(error));
+    }
+  }
+
   async function refreshRegisteredTarget() {
     try {
       const storedRoot = editorTargetRootRef.current;
@@ -978,6 +1067,14 @@ export default function App() {
       ? tasks.find((task) => task.threadId === eventThreadId || task.id === codexThreadTaskIdsRef.current[eventThreadId])
       : tasks.find((task) => task.id === activeTaskId) || tasks[0];
     const eventTaskId = eventTask?.id;
+    if (event.type === "approval-request") {
+      const params = event.params && typeof event.params === "object" ? event.params as Record<string, unknown> : {};
+      const taskId = eventTaskId || activeTaskId;
+      setPendingApproval({ requestId: event.requestId, method: event.method, params, taskId });
+      if (taskId) updateCodexTask(taskId, (task) => ({ ...task, status: "waiting-approval" }));
+      addLog("status", "Codex is waiting for approval");
+      return;
+    }
     if (event.type === "delta" && event.text) {
       queueAssistantDelta(event.text, eventTaskId);
     }
@@ -986,6 +1083,7 @@ export default function App() {
     }
     if (event.type === "error") {
       addLog("error", event.message);
+      if (eventTaskId) updateCodexTask(eventTaskId, (task) => ({ ...task, status: "failed" }));
     }
     if (event.type === "completed") {
       flushAssistantDeltas();
@@ -996,8 +1094,28 @@ export default function App() {
       if (eventTaskId) {
         codexTurnBusyRef.current[eventTaskId] = false;
         setBusy(false, eventTaskId);
+        updateCodexTask(eventTaskId, (task) => ({ ...task, status: "ready" }));
       }
     }
+  }
+
+  async function resolvePendingApproval(decision: "accept" | "acceptForSession" | "decline" | "cancel") {
+    if (!pendingApproval) return;
+    const request = pendingApproval;
+    try {
+      await respondCodexApproval(request.requestId, { decision });
+      if (request.taskId) updateCodexTask(request.taskId, (task) => ({ ...task, status: decision === "decline" || decision === "cancel" ? "interrupted" : "working" }));
+      addLog("status", decision === "decline" || decision === "cancel" ? "Codex approval declined" : "Codex approval granted");
+    } catch (error) {
+      addLog("error", error instanceof Error ? error.message : String(error));
+    } finally {
+      setPendingApproval(null);
+    }
+  }
+
+  function continueChatMessage() {
+    setCodexInput("Continue");
+    codexInputRef.current?.focus();
   }
 
   function handleWorkspaceEvent(event: WorkspaceAgentsEvent) {
@@ -1018,8 +1136,7 @@ export default function App() {
       {
         source: "web-no-code-editor",
         type: "inspector:set-enabled",
-        enabled: inspectorEnabled || dragEnabled,
-        dragEnabled,
+        enabled: inspectorEnabled,
         temporaryMode: temporaryInspectorMode
       },
       "*"
@@ -1030,17 +1147,7 @@ export default function App() {
     setInspectorEnabled((enabled) => {
       const nextEnabled = !enabled;
       setTemporaryInspectorMode(null);
-      if (nextEnabled) setDragEnabled(false);
       if (!nextEnabled) clearSelectedElement();
-      return nextEnabled;
-    });
-  }
-
-  function toggleDragMode() {
-    setDragEnabled((enabled) => {
-      const nextEnabled = !enabled;
-      setTemporaryInspectorMode(null);
-      if (nextEnabled) setInspectorEnabled(false);
       return nextEnabled;
     });
   }
@@ -1048,10 +1155,6 @@ export default function App() {
   function handleInspectorShortcutMessage(shortcut: unknown) {
     if (shortcut === "select") {
       toggleInspectorMode();
-      return;
-    }
-    if (shortcut === "drag") {
-      toggleDragMode();
       return;
     }
     if (shortcut === "open-source") {
@@ -1179,11 +1282,12 @@ export default function App() {
       const url = new URL(resolvePreviewNavigationUrl(previewUrlInput, previewUrl), window.location.href);
       setPreviewQueryEditor({
         open: true,
+        url: createPreviewUrlSettings(url),
         params: Array.from(url.searchParams.entries(), ([key, value]) => createPreviewQueryParam(key, value)),
         error: ""
       });
     } catch {
-      setPreviewQueryEditor({ open: true, params: [], error: "Enter a valid URL before editing its parameters." });
+      setPreviewQueryEditor({ open: true, url: emptyPreviewUrlSettings(), params: [], error: "Enter a valid URL before editing its parameters." });
     }
   }
 
@@ -1197,6 +1301,10 @@ export default function App() {
       error: "",
       params: current.params.map((param) => (param.id === id ? { ...param, [field]: value } : param))
     }));
+  }
+
+  function updatePreviewUrlSetting(field: keyof PreviewUrlSettings, value: string) {
+    setPreviewQueryEditor((current) => ({ ...current, error: "", url: { ...current.url, [field]: value } }));
   }
 
   function addPreviewQueryParam() {
@@ -1218,6 +1326,13 @@ export default function App() {
     event.preventDefault();
     try {
       const url = new URL(resolvePreviewNavigationUrl(previewUrlInput, previewUrl), window.location.href);
+      url.protocol = previewQueryEditor.url.protocol.trim().replace(/:?$/, ":");
+      url.username = previewQueryEditor.url.username;
+      url.password = previewQueryEditor.url.password;
+      url.hostname = previewQueryEditor.url.hostname.trim();
+      url.port = previewQueryEditor.url.port.trim();
+      url.pathname = previewQueryEditor.url.pathname || "/";
+      url.hash = previewQueryEditor.url.hash ? (previewQueryEditor.url.hash.startsWith("#") ? previewQueryEditor.url.hash : `#${previewQueryEditor.url.hash}`) : "";
       url.search = "";
       for (const param of previewQueryEditor.params) {
         const key = param.key.trim();
@@ -1416,19 +1531,106 @@ export default function App() {
   }
 
   function createCodexTask() {
-    if (codexTasksRef.current.length >= MAX_CODEX_TASKS) return;
     const task = createEmptyCodexTask();
     pendingCodexTaskScrollRef.current = task.id;
     replaceCodexTasks((current) => {
-      if (current.length >= MAX_CODEX_TASKS) return current;
-      const next = [...current, task];
-      return next;
+      return [...current, task];
     });
     setActiveCodexTaskId(task.id);
     activeCodexTaskIdRef.current = task.id;
     setPendingDeleteCodexTaskId("");
     closeSkillMenu();
     addLog("status", "Started a new Codex task");
+  }
+
+  async function executeCodexSlashCommand(_taskId: string, _rawInput: string) {
+    return false;
+    /*
+    const match = rawInput.trim().match(/^\/([A-Za-z0-9_-]+)(?:\s+([\s\S]*))?$/);
+    if (!match) return false;
+    const command = match[1].toLowerCase();
+    const argument = match[2]?.trim() || "";
+    const commandEntry = CODEX_SLASH_COMMANDS.find((item) => item.name === command);
+    if (!commandEntry) return false;
+    appendChatMessage("user", rawInput, undefined, taskId);
+    if (command === "clear") {
+      updateCodexTask(taskId, (task) => ({ ...task, chatMessages: [] }));
+      return true;
+    }
+    if (command === "help") {
+      appendChatMessage("assistant", CODEX_SLASH_COMMANDS.map((item) => `/${item.name} - ${item.description}`).join("\n"), undefined, taskId);
+      return true;
+    }
+    if (command === "model") {
+      setCodexModelPickerOpen(true);
+      appendChatMessage("assistant", "Model picker opened.", undefined, taskId);
+      return true;
+    }
+    if (command === "status") {
+      appendChatMessage(
+        "assistant",
+        `Workspace: ${workspaceRoot || "not set"}\nModel: ${codexModelLabel}\nTask: ${activeCodexTask?.title || "New Task"}\nThread: ${threadId || "not started"}`,
+        undefined,
+        taskId
+      );
+      return true;
+    }
+    if (command === "diff") {
+      if (!threadId) {
+        appendChatMessage("assistant", "No Codex thread is active yet.", undefined, taskId);
+        return true;
+      }
+      try {
+        const result = await getCodexDiff(threadId);
+        appendChatMessage("assistant", result.diff ? `\`\`\`diff\n${result.diff}\n\`\`\`` : "No workspace diff is available.", undefined, taskId);
+      } catch (error) {
+        appendChatMessage("assistant", `Unable to load diff: ${error instanceof Error ? error.message : String(error)}`, undefined, taskId);
+      }
+      return true;
+    }
+    if (command === "compact") {
+      const messages = codexTasksRef.current.find((task) => task.id === taskId)?.chatMessages || [];
+      updateCodexTask(taskId, (task) => ({ ...task, chatMessages: task.chatMessages.slice(-8) }));
+      appendChatMessage("assistant", `Conversation compacted from ${messages.length} messages.`, undefined, taskId);
+      return true;
+    }
+    if (command === "undo") {
+      if (!workspaceRoot || !historyState.canUndo) {
+        appendChatMessage("assistant", "No workspace change is available to undo.", undefined, taskId);
+        return true;
+      }
+      try {
+        const result = await undoWorkspace(workspaceRoot);
+        setHistoryState({ canUndo: result.canUndo, canRedo: result.canRedo });
+        reloadTarget(true);
+        appendChatMessage("assistant", `Undid ${result.changedFiles?.length || 0} file change(s).`, undefined, taskId);
+      } catch (error) {
+        appendChatMessage("assistant", `Unable to undo: ${error instanceof Error ? error.message : String(error)}`, undefined, taskId);
+      }
+      return true;
+    }
+    if (command === "init") {
+      if (!workspaceRoot) {
+        appendChatMessage("assistant", "No workspace is configured for AGENTS.md.", undefined, taskId);
+        return true;
+      }
+      try {
+        const result = await updateWorkspaceAgents(workspaceRoot, agentsInstructions || "# Project instructions\n\nDescribe the project conventions and validation commands here.\n");
+        agentsInstructionsRef.current = result.content;
+        setAgentsInstructions(result.content);
+        setDraftAgentsInstructions(result.content);
+        appendChatMessage("assistant", "Created or updated the project AGENTS.md file.", undefined, taskId);
+      } catch (error) {
+        appendChatMessage("assistant", `Unable to initialize AGENTS.md: ${error instanceof Error ? error.message : String(error)}`, undefined, taskId);
+      }
+      return true;
+    }
+    if (command === "review" || command === "plan") {
+      const prompt = argument ? `${commandEntry.description}: ${argument}` : commandEntry.description;
+      updateCodexTask(taskId, (task) => ({ ...task, input: prompt }));
+      return false;
+    }
+    return false; */
   }
 
   function switchCodexTask(taskId: string) {
@@ -1482,7 +1684,32 @@ export default function App() {
   function renameCodexTaskFromInput(taskId: string, input: string) {
     const title = summarizeCodexTaskTitle(input);
     if (!title) return;
-    updateCodexTask(taskId, (task) => (task.title === "New task" ? { ...task, title } : task));
+    updateCodexTask(taskId, (task) => (task.title === "New Task" ? { ...task, title } : task));
+  }
+
+  function beginRenameCodexTask(task: CodexTask) {
+    setEditingCodexTask({ id: task.id, title: task.title });
+  }
+
+  function commitRenameCodexTask() {
+    if (!editingCodexTask) return;
+    const nextTitle = editingCodexTask.title.trim();
+    if (nextTitle) updateCodexTask(editingCodexTask.id, (task) => ({ ...task, title: nextTitle }));
+    setEditingCodexTask(null);
+  }
+
+  function cancelRenameCodexTask() {
+    setEditingCodexTask(null);
+  }
+
+  function handleCodexTaskTitleKeyDown(event: ReactKeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      commitRenameCodexTask();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      cancelRenameCodexTask();
+    }
   }
 
   function handleCodexInputKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
@@ -1520,28 +1747,38 @@ export default function App() {
 
   function updateSkillMenu(value: string, cursor: number) {
     const beforeCursor = value.slice(0, cursor);
-    const dollarIndex = beforeCursor.lastIndexOf("$");
-    if (dollarIndex < 0) {
+    const triggerCandidates = [
+      { index: beforeCursor.lastIndexOf("$"), trigger: "$" as const },
+      { index: beforeCursor.lastIndexOf("@"), trigger: "@" as const }
+    ]
+      .filter(({ index }) => index >= 0 && (index === 0 || /\s/.test(beforeCursor[index - 1] || "")))
+      .sort((left, right) => right.index - left.index);
+    const triggerStart = triggerCandidates[0]?.index ?? -1;
+    if (triggerStart < 0) {
       closeSkillMenu();
       return;
     }
-    const query = beforeCursor.slice(dollarIndex + 1);
-    if (!/^[A-Za-z0-9_-]*$/.test(query)) {
+    const trigger = triggerCandidates[0].trigger;
+    const query = beforeCursor.slice(triggerStart + 1);
+    const queryPattern = trigger === "@" ? /^[A-Za-z0-9_./\\-]*$/ : /^[A-Za-z0-9_-]*$/;
+    if (!queryPattern.test(query)) {
       closeSkillMenu();
       return;
     }
-    setSkillTriggerStart(dollarIndex);
+    setSkillTriggerStart(triggerStart);
+    setSkillTrigger(trigger);
     setSkillQuery(query);
     setSkillActiveIndex(0);
     setSkillMenuOpen(true);
-    void ensureSkillsLoaded();
+    if (trigger === "$") void ensureSkillsLoaded();
+    if (trigger === "@") void ensureWorkspaceFilesLoaded();
   }
 
   function insertSkill(name: string) {
     if (skillTriggerStart == null) return;
     const before = codexInput.slice(0, skillTriggerStart);
     const after = codexInput.slice(skillTriggerStart + skillQuery.length + 1);
-    setCodexInput(`${before}$${name} ${after}`);
+    setCodexInput(`${before}${skillTrigger}${name} ${after}`);
     closeSkillMenu();
   }
 
@@ -1549,6 +1786,7 @@ export default function App() {
     setSkillMenuOpen(false);
     setSkillQuery("");
     setSkillTriggerStart(null);
+    setSkillTrigger("$");
     setSkillActiveIndex(0);
   }
 
@@ -1724,6 +1962,7 @@ export default function App() {
       });
       setStyleFile(file);
       setSelected((current) => updateSelectedStyle(current, property, value, file, source));
+      void refreshHistoryState();
       addLog("status", `Applied ${property} to ${file}`);
       return true;
     } catch (error) {
@@ -2175,6 +2414,29 @@ export default function App() {
     }));
   }
 
+  async function copyChatMessage(message: ChatMessage) {
+    try {
+      await navigator.clipboard.writeText(message.content);
+      addLog("status", "Copied message to clipboard");
+    } catch (error) {
+      addLog("error", error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  function retryChatMessage(message: ChatMessage) {
+    const task = activeCodexTask;
+    if (!task) return;
+    const index = task.chatMessages.findIndex((item) => item.id === message.id);
+    const previousUser = index >= 0
+      ? [...task.chatMessages.slice(0, index)].reverse().find((item) => item.role === "user")
+      : undefined;
+    if (previousUser) updateActiveCodexTask((current) => ({ ...current, input: previousUser.content }));
+  }
+
+  function editChatMessage(message: ChatMessage) {
+    updateActiveCodexTask((task) => ({ ...task, input: message.content }));
+  }
+
   function appendAssistantDelta(text: string, taskId = activeCodexTask?.id) {
     if (!text) return;
     if (!taskId) return;
@@ -2261,15 +2523,12 @@ export default function App() {
     return event.ctrlKey && !event.metaKey && event.key.toLowerCase() === "c";
   }
 
-  function isDragShortcut(event: KeyboardEvent) {
-    return event.ctrlKey && !event.metaKey && event.key.toLowerCase() === "d";
-  }
 
   function isOpenSourceShortcut(event: KeyboardEvent) {
     return event.ctrlKey && !event.metaKey && event.key.toLowerCase() === "s";
   }
 
-  function temporaryInspectorModeFromEvent(event: KeyboardEvent): "select" | "drag" | null {
+  function temporaryInspectorModeFromEvent(event: KeyboardEvent): "select" | null {
     if (event.repeat || event.metaKey || event.ctrlKey) return null;
     if ((event.key === "Alt" || event.key === "Option") && event.altKey) {
       return "select";
@@ -2277,13 +2536,13 @@ export default function App() {
     return null;
   }
 
-  function temporaryInspectorModeFromKey(key: string): "select" | "drag" | null {
+  function temporaryInspectorModeFromKey(key: string): "select" | null {
     if (key === "Alt" || key === "Option") return "select";
     return null;
   }
 
-  function normalizeTemporaryInspectorMode(value: unknown): "select" | "drag" | null {
-    return value === "select" || value === "drag" ? value : null;
+  function normalizeTemporaryInspectorMode(value: unknown): "select" | null {
+    return value === "select" ? value : null;
   }
 
   function isTypingTarget(target: EventTarget | null) {
@@ -2297,10 +2556,11 @@ export default function App() {
 
   const filteredSkills = useMemo(() => {
     const query = skillQuery.toLowerCase();
-    return skills
-      .filter((skill) => !query || skill.name.toLowerCase().includes(query))
-      .slice(0, 8);
-  }, [skills, skillQuery]);
+    const entries: CodexMenuEntry[] = skillTrigger === "@"
+        ? workspaceFiles.map((file) => ({ name: file, description: "Workspace file", path: file }))
+        : skills;
+    return entries.filter((entry) => !query || entry.name.toLowerCase().includes(query));
+  }, [skillQuery, skillTrigger, skills, workspaceFiles]);
 
   useEffect(() => {
     setSkillActiveIndex((current) => Math.min(current, Math.max(0, filteredSkills.length - 1)));
@@ -2388,7 +2648,8 @@ export default function App() {
                         else codexTaskTabRefs.current.delete(task.id);
                       }}
                       className={task.id === activeCodexTask?.id ? "codex-task-tab active" : "codex-task-tab"}
-                      title={task.title}
+                      title={`${task.title} - ${codexTaskStatusLabel(task)}`}
+                      aria-label={`${task.title}, ${codexTaskStatusLabel(task).toLowerCase()}`}
                     >
                       <button className="codex-task-switch" type="button" onClick={() => switchCodexTask(task.id)}>
                         {task.busy ? (
@@ -2396,21 +2657,57 @@ export default function App() {
                             <Loader2 className="spin" size={15} />
                           </span>
                         ) : null}
-                        <span>{task.title}</span>
+                        <span className={`codex-task-status-dot ${task.status || (task.chatMessages.length ? "ready" : "new")}`} aria-hidden="true" />
+                        {editingCodexTask?.id === task.id ? (
+                          <input
+                            className="codex-task-title-input"
+                            value={editingCodexTask.title}
+                            autoFocus
+                            onClick={(event) => event.stopPropagation()}
+                            onChange={(event) => setEditingCodexTask({ id: task.id, title: event.target.value })}
+                            onBlur={commitRenameCodexTask}
+                            onKeyDown={handleCodexTaskTitleKeyDown}
+                            aria-label={`Rename ${task.title}`}
+                          />
+                        ) : (
+                          <span onDoubleClick={(event) => { event.preventDefault(); event.stopPropagation(); beginRenameCodexTask(task); }}>
+                            {task.title}
+                          </span>
+                        )}
                       </button>
                       {task.id === activeCodexTask?.id ? (
-                        <button
-                          className="codex-task-delete"
-                          type="button"
-                          onClick={() => deleteCodexTask(task.id)}
-                          title={`Delete ${task.title}`}
-                          aria-label={`Delete ${task.title}`}
-                        >
-                          <X size={12} />
-                        </button>
+                        <>
+                          <button
+                            className="codex-task-rename"
+                            type="button"
+                            onClick={() => beginRenameCodexTask(task)}
+                            title={`Rename ${task.title}`}
+                            aria-label={`Rename ${task.title}`}
+                          >
+                            <Pencil size={12} />
+                          </button>
+                          <button
+                            className="codex-task-delete"
+                            type="button"
+                            onClick={() => deleteCodexTask(task.id)}
+                            title={`Delete ${task.title}`}
+                            aria-label={`Delete ${task.title}`}
+                          >
+                            <X size={12} />
+                          </button>
+                        </>
                       ) : null}
                     </div>
                   ))}
+                  <button
+                    className="icon-button codex-new-thread-button"
+                    type="button"
+                    onClick={createCodexTask}
+                    title="New Codex thread"
+                    aria-label="New Codex thread"
+                  >
+                    <Plus size={15} />
+                  </button>
                 </div>
               </div>
               {pendingDeleteCodexTask ? (
@@ -2432,12 +2729,29 @@ export default function App() {
                       message={message}
                       streaming={busy && message.role === "assistant" && index === chatMessages.length - 1}
                       activityElapsedMs={codexActivityElapsedMs}
+                      onCopy={copyChatMessage}
+                      onEdit={editChatMessage}
+                      onRetry={retryChatMessage}
+                      onContinue={continueChatMessage}
                     />
                   ))
                 ) : (
                   <div className="chat-empty">Codex responses will stream here.</div>
                 )}
               </div>
+              {pendingApproval ? (
+                <section className="codex-approval-panel" aria-label="Codex approval request">
+                  <div className="codex-approval-heading"><strong>Approval required</strong><span>{pendingApproval.method}</span></div>
+                  {typeof pendingApproval.params.command === "string" ? <code>{pendingApproval.params.command}</code> : null}
+                  {typeof pendingApproval.params.cwd === "string" ? <small>cwd: {pendingApproval.params.cwd}</small> : null}
+                  {typeof pendingApproval.params.reason === "string" ? <p>{pendingApproval.params.reason}</p> : null}
+                  <div className="codex-approval-actions">
+                    <button type="button" onClick={() => void resolvePendingApproval("accept")}><Check size={14} />Allow</button>
+                    {pendingApproval.method.includes("commandExecution") ? <button type="button" onClick={() => void resolvePendingApproval("acceptForSession")}><Check size={14} />Allow for session</button> : null}
+                    <button type="button" className="ghost" onClick={() => void resolvePendingApproval("decline")}><X size={14} />Deny</button>
+                  </div>
+                </section>
+              ) : null}
               <div
                 className="codex-input-wrap"
                 onPasteCapture={handleCodexInputPaste}
@@ -2474,8 +2788,9 @@ export default function App() {
                     ))}
                   </div>
                 ) : null}
-                <textarea
-                  className="codex-input"
+                  <textarea
+                  ref={codexInputRef}
+                    className="codex-input"
                   value={codexInput}
                   placeholder="Describe the edit you want Codex to make"
                   onChange={handleCodexInputChange}
@@ -2608,19 +2923,6 @@ export default function App() {
                     <ImageUp size={15} />
                   </button>
                   <button
-                    className="icon-button codex-new-thread-button"
-                    type="button"
-                    onClick={createCodexTask}
-                    title={canCreateCodexTask ? "New Codex thread" : `Maximum of ${MAX_CODEX_TASKS} Codex threads reached`}
-                    data-tooltip={
-                      canCreateCodexTask ? "New Codex thread" : `Maximum of ${MAX_CODEX_TASKS} Codex threads reached`
-                    }
-                    aria-label={canCreateCodexTask ? "New Codex thread" : `Maximum of ${MAX_CODEX_TASKS} Codex threads reached`}
-                    disabled={!canCreateCodexTask}
-                  >
-                    <Plus size={15} />
-                  </button>
-                  <button
                     className="icon-button codex-send-button"
                     onClick={handleRunCodex}
                     title={codexSendLabel}
@@ -2630,7 +2932,11 @@ export default function App() {
                   </button>
                 </div>
                 {skillMenuOpen ? (
-                  <div className="skill-menu" ref={skillMenuRef}>
+                  <div
+                    className="skill-menu"
+                    ref={skillMenuRef}
+                    aria-label={skillTrigger === "@" ? "Workspace files" : "Codex skills"}
+                  >
                     {filteredSkills.length ? (
                       filteredSkills.map((skill, index) => (
                         <button
@@ -2641,12 +2947,12 @@ export default function App() {
                           onClick={() => insertSkill(skill.name)}
                           onMouseEnter={() => setSkillActiveIndex(index)}
                         >
-                          <strong>${skill.name}</strong>
+                          <strong>{skillTrigger}{skill.name}</strong>
                           {skill.description ? <span>{skill.description}</span> : null}
                         </button>
                       ))
                     ) : (
-                      <p>No matching skills</p>
+                      <p>{skillTrigger === "@" ? "No matching files" : "No matching skills"}</p>
                     )}
                   </div>
                 ) : null}
@@ -2848,13 +3154,24 @@ export default function App() {
             <MousePointer2 size={18} />
           </button>
           <button
-            className={dragEnabled || temporaryInspectorMode === "drag" ? "icon-button active" : "icon-button"}
-            title="Drag element (Ctrl+D)"
-            data-tooltip="Drag element - Ctrl+D"
-            aria-keyshortcuts="Control+D"
-            onClick={toggleDragMode}
+            className="icon-button"
+            type="button"
+            onClick={() => void runWorkspaceHistoryAction("undo")}
+            disabled={!historyState.canUndo}
+            title="Undo workspace change"
+            aria-label="Undo workspace change"
           >
-            <Move size={18} />
+            <Undo2 size={17} />
+          </button>
+          <button
+            className="icon-button"
+            type="button"
+            onClick={() => void runWorkspaceHistoryAction("redo")}
+            disabled={!historyState.canRedo}
+            title="Redo workspace change"
+            aria-label="Redo workspace change"
+          >
+            <Redo2 size={17} />
           </button>
           <div className="selected-readout">
             <Crosshair size={15} />
@@ -3114,13 +3431,22 @@ export default function App() {
           >
             <header className="preview-query-dialog__header">
               <div>
-                <strong id="preview-query-dialog-title">Query parameters</strong>
-                <span>{previewQueryEditor.params.length} parameters</span>
+                <strong id="preview-query-dialog-title">URL settings</strong>
+                <span>{previewQueryEditor.params.length} query parameters</span>
               </div>
               <button className="icon-button" type="button" onClick={closePreviewQueryEditor} title="Close">
                 <X size={16} />
               </button>
             </header>
+            <div className="preview-url-fields">
+              <label>Protocol<input value={previewQueryEditor.url.protocol} onChange={(event) => updatePreviewUrlSetting("protocol", event.target.value)} placeholder="https:" /></label>
+              <label>Host<input value={previewQueryEditor.url.hostname} onChange={(event) => updatePreviewUrlSetting("hostname", event.target.value)} placeholder="example.com" /></label>
+              <label>Port<input value={previewQueryEditor.url.port} onChange={(event) => updatePreviewUrlSetting("port", event.target.value)} placeholder="443" /></label>
+              <label>Path<input value={previewQueryEditor.url.pathname} onChange={(event) => updatePreviewUrlSetting("pathname", event.target.value)} placeholder="/" /></label>
+              <label>Username<input value={previewQueryEditor.url.username} onChange={(event) => updatePreviewUrlSetting("username", event.target.value)} /></label>
+              <label>Password<input type="password" value={previewQueryEditor.url.password} onChange={(event) => updatePreviewUrlSetting("password", event.target.value)} /></label>
+              <label className="preview-url-field-wide">Hash<input value={previewQueryEditor.url.hash} onChange={(event) => updatePreviewUrlSetting("hash", event.target.value)} placeholder="#section" /></label>
+            </div>
             <div className="preview-query-dialog__columns" aria-hidden="true">
               <span>Key</span>
               <span>Value</span>
@@ -3235,6 +3561,22 @@ function normalizeSiblingOptions(value: unknown): SiblingOption[] {
 function createPreviewQueryParam(key = "", value = ""): PreviewQueryParam {
   previewQueryParamId += 1;
   return { id: `preview-query-${previewQueryParamId}`, key, value };
+}
+
+function createPreviewUrlSettings(url: URL): PreviewUrlSettings {
+  return {
+    protocol: url.protocol,
+    username: decodeURIComponent(url.username),
+    password: decodeURIComponent(url.password),
+    hostname: url.hostname,
+    port: url.port,
+    pathname: url.pathname,
+    hash: url.hash
+  };
+}
+
+function emptyPreviewUrlSettings(): PreviewUrlSettings {
+  return { protocol: "https:", username: "", password: "", hostname: "", port: "", pathname: "/", hash: "" };
 }
 
 function resolveSelectedImage(
@@ -4026,7 +4368,7 @@ function readCodexSessionStorage(workspaceRoot: string): CodexSessionSnapshot {
     if (!raw) return emptyCodexSessionSnapshot();
     const parsed = JSON.parse(raw) as Partial<CodexSessionSnapshot>;
     const tasks = Array.isArray(parsed.tasks)
-      ? parsed.tasks.map(normalizeStoredCodexTask).filter((task): task is CodexTask => Boolean(task)).slice(-MAX_CODEX_TASKS)
+      ? parsed.tasks.map(normalizeStoredCodexTask).filter((task): task is CodexTask => Boolean(task))
       : [];
     if (tasks.length) {
       chatId = Math.max(chatId, ...tasks.flatMap((task) => task.chatMessages.map((message) => message.id)), 0);
@@ -4062,7 +4404,7 @@ function writeCodexSessionStorage(workspaceRoot: string, snapshot: CodexSessionS
       codexSessionStorageKey(workspaceRoot),
       JSON.stringify({
         activeTaskId: snapshot.activeTaskId,
-        tasks: snapshot.tasks.slice(-MAX_CODEX_TASKS).map((task) => ({
+        tasks: snapshot.tasks.map((task) => ({
           ...task,
           attachments: task.attachments.slice(-12),
           chatMessages: task.chatMessages.slice(-31)
@@ -4124,12 +4466,13 @@ function createEmptyCodexTask(init: Partial<Omit<CodexTask, "id" | "createdAt" |
   const now = Date.now();
   return {
     id: createClientId(),
-    title: init.title || "New task",
+    title: init.title || "New Task",
     threadId: init.threadId || "",
     input: init.input || "",
     attachments: init.attachments || [],
     chatMessages: init.chatMessages || [],
     busy: Boolean(init.busy),
+    status: init.status || (init.busy ? "working" : init.chatMessages?.length ? "ready" : "new"),
     turnStartedAt: init.turnStartedAt,
     createdAt: now,
     updatedAt: now
@@ -4148,18 +4491,32 @@ function normalizeStoredCodexTask(value: unknown): CodexTask | null {
     : [];
   return {
     id: task.id,
-    title: typeof task.title === "string" && task.title.trim() ? task.title : "New task",
+    title:
+      typeof task.title === "string" && task.title.trim()
+        ? task.title === "New task" ? "New Task" : task.title
+        : "New Task",
     threadId: typeof task.threadId === "string" ? task.threadId : "",
     input: typeof task.input === "string" ? task.input : "",
     attachments,
     chatMessages,
     busy: Boolean(task.busy && task.threadId),
+    status: task.status === "waiting-approval" || task.status === "failed" || task.status === "interrupted"
+      ? task.status
+      : task.busy && task.threadId ? "working" : chatMessages.length ? "ready" : "new",
     turnStartedAt: typeof task.turnStartedAt === "number" && Number.isFinite(task.turnStartedAt)
       ? task.turnStartedAt
       : undefined,
     createdAt: typeof task.createdAt === "number" ? task.createdAt : Date.now(),
     updatedAt: typeof task.updatedAt === "number" ? task.updatedAt : Date.now()
   };
+}
+
+function codexTaskStatusLabel(task: CodexTask) {
+  if (task.status === "waiting-approval") return "Waiting for approval";
+  if (task.status === "failed") return "Failed";
+  if (task.status === "interrupted") return "Interrupted";
+  if (task.busy || task.status === "working") return "Working";
+  return task.chatMessages.length ? "Ready" : "New";
 }
 
 function isStoredCodexAttachment(value: unknown): value is CodexAttachment {

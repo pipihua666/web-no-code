@@ -3,7 +3,7 @@ import multer from "multer";
 import { existsSync, watch, type FSWatcher } from "node:fs";
 import { mkdir, readdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { nanoid } from "nanoid";
 import { addEventClient, emitWorkspaceEvent } from "./events";
@@ -18,6 +18,13 @@ import {
   saveAsset
 } from "./workspace/patch-engine";
 import { disposeAllShadowWorkspaces } from "./workspace/shadow-workspace";
+import {
+  captureWorkspaceFiles,
+  getWorkspaceHistoryState,
+  recordWorkspaceHistory,
+  redoWorkspaceHistory,
+  undoWorkspaceHistory
+} from "./workspace/history";
 
 const app = express();
 const upload = multer({ storage: multer.memoryStorage() });
@@ -164,6 +171,47 @@ app.put("/api/global/agents", async (request, response) => {
   }
 });
 
+app.get("/api/workspace/history", (request, response) => {
+  try {
+    const root = String(request.query.root || "");
+    if (!root) throw new Error("Missing workspace root");
+    response.json(getWorkspaceHistoryState(root));
+  } catch (error) {
+    response.status(400).json(errorPayload(error));
+  }
+});
+
+app.post("/api/workspace/history/undo", async (request, response) => {
+  try {
+    const root = String(request.body.root || "");
+    if (!root) throw new Error("Missing workspace root");
+    response.json(await undoWorkspaceHistory(root));
+  } catch (error) {
+    response.status(400).json(errorPayload(error));
+  }
+});
+
+app.post("/api/workspace/history/redo", async (request, response) => {
+  try {
+    const root = String(request.body.root || "");
+    if (!root) throw new Error("Missing workspace root");
+    response.json(await redoWorkspaceHistory(root));
+  } catch (error) {
+    response.status(400).json(errorPayload(error));
+  }
+});
+
+app.get("/api/workspace/files", async (request, response) => {
+  try {
+    const requestedRoot = String(request.query.root || "").trim();
+    if (!requestedRoot) throw new Error("Missing workspace root");
+    const root = resolve(requestedRoot);
+    response.json({ files: await listWorkspaceFiles(root) });
+  } catch (error) {
+    response.status(400).json(errorPayload(error));
+  }
+});
+
 app.post("/api/codex/thread", async (request, response) => {
   try {
     response.json(
@@ -246,20 +294,21 @@ app.get("/api/codex/diff/:threadId", async (request, response) => {
   }
 });
 
-app.post("/api/codex/apply", async (request, response) => {
-  try {
-    response.json(await codexBridge.applyThread(String(request.body.threadId || "")));
-  } catch (error) {
-    response.status(500).json(errorPayload(error));
-  }
-});
-
 app.post("/api/codex/interrupt", async (request, response) => {
   try {
     await codexBridge.interrupt(String(request.body.threadId || ""));
     response.json({ ok: true });
   } catch (error) {
     response.status(500).json(errorPayload(error));
+  }
+});
+
+app.post("/api/codex/approval", (request, response) => {
+  try {
+    codexBridge.respondToServerRequest(request.body.requestId, request.body.result);
+    response.json({ ok: true });
+  } catch (error) {
+    response.status(400).json(errorPayload(error));
   }
 });
 
@@ -273,7 +322,12 @@ app.post("/api/patch/style/preview", async (request, response) => {
 
 app.post("/api/patch/style/apply", async (request, response) => {
   try {
-    response.json(await commitStylePatch(request.body));
+    const patch = request.body;
+    const before = await captureWorkspaceFiles(patch.root, [patch.file]);
+    const result = await commitStylePatch(patch);
+    const after = await captureWorkspaceFiles(patch.root, [patch.file]);
+    recordWorkspaceHistory(patch.root, before, after, `Style update: ${patch.property}`);
+    response.json(result);
   } catch (error) {
     response.status(500).json(errorPayload(error));
   }
@@ -289,7 +343,12 @@ app.post("/api/patch/text/preview", async (request, response) => {
 
 app.post("/api/patch/text/apply", async (request, response) => {
   try {
-    response.json(await commitTextPatch(request.body));
+    const patch = request.body;
+    const before = await captureWorkspaceFiles(patch.root, [patch.file]);
+    const result = await commitTextPatch(patch);
+    const after = await captureWorkspaceFiles(patch.root, [patch.file]);
+    recordWorkspaceHistory(patch.root, before, after, `Text update: ${patch.file}`);
+    response.json(result);
   } catch (error) {
     response.status(500).json(errorPayload(error));
   }
@@ -607,11 +666,10 @@ async function readSkillsFromRoot(root: string) {
       const skillPath = join(directory, skillEntry.name);
       const content = await readFile(skillPath, "utf8").catch(() => "");
       if (content) skills.push(parseSkillMarkdown(content, skillPath, dirnameName(directory)));
-      return;
     }
 
     for (const entry of entries) {
-      if (entry.name === ".git" || entry.name === ".system" || entry.name === "node_modules") continue;
+      if (entry.name === ".git" || entry.name === "node_modules") continue;
       if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
       await visit(join(directory, entry.name));
     }
@@ -628,9 +686,33 @@ function dirnameName(path: string) {
 function parseSkillMarkdown(content: string, path: string, fallbackName: string) {
   const frontmatter = content.match(/^---\n([\s\S]*?)\n---/);
   const meta = frontmatter?.[1] || "";
-  const name = meta.match(/^name:\s*(.+)$/m)?.[1]?.trim() || fallbackName;
-  const description = meta.match(/^description:\s*(.+)$/m)?.[1]?.trim() || "";
+  const name = parseFrontmatterValue(meta.match(/^name:\s*(.+)$/m)?.[1]) || fallbackName;
+  const description = parseFrontmatterValue(meta.match(/^description:\s*(.+)$/m)?.[1]);
   return { name, description, path };
+}
+
+function parseFrontmatterValue(value: string | undefined) {
+  const normalized = value?.trim() || "";
+  if (normalized.length >= 2 && ((normalized.startsWith('"') && normalized.endsWith('"')) || (normalized.startsWith("'") && normalized.endsWith("'")))) {
+    return normalized.slice(1, -1);
+  }
+  return normalized;
+}
+
+async function listWorkspaceFiles(root: string) {
+  const files: string[] = [];
+  async function visit(directory: string) {
+    if (files.length >= 2000) return;
+    const entries = await readdir(directory, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (files.length >= 2000 || entry.name === ".git" || entry.name === "node_modules" || entry.name === "dist" || entry.name === ".next") continue;
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) await visit(path);
+      else if (entry.isFile()) files.push(relative(root, path).replaceAll("\\", "/"));
+    }
+  }
+  await visit(root);
+  return files.sort((left, right) => left.localeCompare(right));
 }
 
 function resolveEditorDist() {

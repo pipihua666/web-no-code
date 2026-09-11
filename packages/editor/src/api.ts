@@ -154,10 +154,48 @@ export async function getCodexThreadStatus(threadId: string) {
   }>;
 }
 
+export async function getCodexDiff(threadId: string) {
+  return request(`/api/codex/diff/${encodeURIComponent(threadId)}`) as Promise<{ diff: string }>;
+}
+
+export async function getWorkspaceHistory(root: string) {
+  return request(`/api/workspace/history?root=${encodeURIComponent(root)}`) as Promise<{
+    canUndo: boolean;
+    canRedo: boolean;
+    undo: { summary: string; files: string[] } | null;
+    redo: { summary: string; files: string[] } | null;
+  }>;
+}
+
+export async function undoWorkspace(root: string) {
+  return request("/api/workspace/history/undo", {
+    method: "POST",
+    body: JSON.stringify({ root })
+  });
+}
+
+export async function redoWorkspace(root: string) {
+  return request("/api/workspace/history/redo", {
+    method: "POST",
+    body: JSON.stringify({ root })
+  });
+}
+
+export async function getWorkspaceFiles(root: string) {
+  return request(`/api/workspace/files?root=${encodeURIComponent(root)}`) as Promise<{ files: string[] }>;
+}
+
 export async function interruptCodexTurn(threadId: string) {
   return request("/api/codex/interrupt", {
     method: "POST",
     body: JSON.stringify({ threadId })
+  }) as Promise<{ ok: true }>;
+}
+
+export async function respondCodexApproval(requestId: number | string, result: unknown) {
+  return request("/api/codex/approval", {
+    method: "POST",
+    body: JSON.stringify({ requestId, result })
   }) as Promise<{ ok: true }>;
 }
 
